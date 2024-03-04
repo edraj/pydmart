@@ -1,6 +1,6 @@
-# Example Package
+# Pydmart
 
-This is a Dmart client for python to interact with a Dmart instance
+This is a Python Dmart client used to interact with a Dmart instance
 
 
 ## Installation
