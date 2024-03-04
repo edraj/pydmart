@@ -1,9 +1,9 @@
 from io import BytesIO
 import json
 import aiohttp
-from enums import ResourceType, RequestType
 from enum import Enum
 from typing import Any, BinaryIO
+from pydmart.enums import RequestType, ResourceType
 
 class RequestMethod(str, Enum):
     get = "get"
