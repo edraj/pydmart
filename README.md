@@ -8,7 +8,7 @@ This is a Python Dmart client used to interact with a Dmart instance
 Pydmart is distributed via [PyPI](https://pypi.org/project/pydmart/):
 
 ```python
-pip install pydmart
+pip install pydmart2
 ```
 
 ## Example
@@ -19,5 +19,5 @@ Just simple steps and you will be ready to interact with your Dmart instance
 2. instantiate an object `d_client = DmartService({dmart_instance_url}, {username}, {password})`
 3. connect the client to the Dmart instance and authenticate your user `await d_client.connect()`
 
-then you will be able to retrieve your profile as simple as 
+You will be able to retrieve your profile as simple as 
 `await d_client.get_profile()`

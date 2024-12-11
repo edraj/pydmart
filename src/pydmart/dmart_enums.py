@@ -1,12 +1,7 @@
 
-from enum import Enum
+from enum import StrEnum
 
 
-class StrEnum(str, Enum):
-    def __str__(self):
-        return self.value
- 
- 
 class Status(StrEnum):
     success = "success"
     failed = "failed"
@@ -15,6 +10,7 @@ class Status(StrEnum):
 class RequestType(StrEnum):
     create = "create"
     update = "update"
+    patch = "patch"
     assign = "assign"
     r_replace = "replace"
     delete = "delete"
