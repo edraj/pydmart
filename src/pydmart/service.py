@@ -3,27 +3,35 @@ import json
 import aiohttp
 from enum import StrEnum
 from typing import Any, BinaryIO
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from pydantic.types import UUID4 as UUID
 
 SUBPATH = "^[a-zA-Z\u0621-\u064A0-9\u0660-\u0669_/]{1,128}$"
 SHORTNAME = "^[a-zA-Z\u0621-\u064A0-9\u0660-\u0669_]{1,64}$"
 
+
 class Status(StrEnum):
     success = "success"
     failed = "failed"
+    
     
 class RequestType(StrEnum):
     create = "create"
     update = "update"
     patch = "patch"
-    update_acl = "update_acl"
     assign = "assign"
     r_replace = "replace"
     delete = "delete"
     move = "move"
-
     
+    
+class RequestMethod(StrEnum):
+    get = "get"
+    post = "post"
+    delete = "delete"
+    put = "put"
+    patch = "patch"
+
 class ResourceType(StrEnum):
     user = "user"
     group = "group"
@@ -56,13 +64,66 @@ class ResourceType(StrEnum):
     sqlite = "sqlite"
     duckdb = "duckdb"
     parquet = "parquet"
-    
-class RequestMethod(StrEnum):
-    get = "get"
-    post = "post"
-    delete = "delete"
-    put = "put"
-    patch = "patch"
+
+
+class ContentType(StrEnum):
+    text = "text"
+    comment = "comment"
+    markdown = "markdown"
+    html = "html"
+    json = "json"
+    image = "image"
+    python = "python"
+    pdf = "pdf"
+    audio = "audio"
+    video = "video"
+    csv = "csv"
+    parquet = "parquet"
+    jsonl = "jsonl"
+    duckdb = "duckdb"
+    sqlite = "sqlite"
+class Resource(BaseModel):
+    model_config = ConfigDict(use_enum_values=True, arbitrary_types_allowed=True)
+
+class Translation(Resource):
+    en: str | None = None
+    ar: str | None = None
+    ku: str | None = None
+
+
+
+class Locator(Resource):
+    uuid: UUID | None = None
+    domain: str | None = None
+    type: ResourceType
+    space_name: str
+    subpath: str
+    shortname: str
+    schema_shortname: str | None = None
+    displayname: Translation | None = None
+    description: Translation | None = None
+    tags: list[str] | None = None
+    hash: str | None = None
+
+
+class Relationship(Resource):
+    related_to: Locator
+    attributes: dict[str, Any]
+
+
+class ACL(BaseModel):
+    user_shortname: str
+    allowed_actions: list = []
+
+class Payload(Resource):
+    content_type: ContentType
+    content_sub_type: str | None = (
+        None  # FIXME change to proper content type static hashmap
+    )
+    schema_shortname: str | None = None
+    client_checksum: str | None = None
+    checksum: str | None = None
+    body: str | dict[str, Any]
 
 class Error(BaseModel):
     type: str
@@ -93,25 +154,46 @@ class Record(BaseModel):
         if self.subpath != "/":
             self.subpath = self.subpath.strip("/")
 
+class Entry(BaseModel): 
+    uuid: str
+    shortname: str
+    subpath: str
+    is_active: bool
+    displayname: Translation
+    description: Translation
+    tags: list[str]
+    created_at: str
+    updated_at: str
+    owner_shortname: str
+    payload: Payload | None = None
+    relationships: Relationship | None = None
+    attachments: dict | None = None
+    acl: list[dict]
+    workflow_shortname: str
+    state: str
+
+
 class DmartResponse(BaseModel):
     status: Status
     error: Error | None = None
-    records: list[Record] | Any | None = None
+    records: list[Record] = []
     attributes: dict[str, Any] | None = None
 
 class DmartService:
     
+    session : aiohttp.ClientSession
+
     @classmethod
-    async def create_session_pool(cls):
+    def create_session_pool(cls):
         if not cls.session:
             cls.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector())
 
 
-    async def __init__(self, url: str, username: str, password: str) -> None:
+    def __init__(self, url: str, username: str, password: str):
         self.dmart_url = url
         self.username = username
         self.password = password
-        await self.create_session_pool()
+        self.create_session_pool()
 
         
     async def connect(self):
@@ -176,13 +258,13 @@ class DmartService:
             method=RequestMethod.get
         )
     
-    async def __api(
+    async def __raw_api(
         self,
         endpoint: str,
         method: RequestMethod,
         json: dict[str, Any] | None = None,
         data: aiohttp.FormData | None = None,
-    ) -> DmartResponse:
+    ) :
         if not self.auth_token:
             raise DmartException(status_code=401, error=Error(code=10, type="login", message="Not authenticated Dmart user"))
 
@@ -194,6 +276,16 @@ class DmartService:
                     error = Error.model_validate(resp_json["error"])
                 )
 
+            return resp_json 
+
+    async def __api(
+        self,
+        endpoint: str,
+        method: RequestMethod,
+        json: dict[str, Any] | None = None,
+        data: aiohttp.FormData | None = None,
+    ) -> DmartResponse:
+            response = self.__raw_api(endpoint, method, json, data)
             return DmartResponse.model_validate(response) 
 
     async def __request(
@@ -227,7 +319,7 @@ class DmartService:
         space_name: str,
         subpath: str,
         attributes: dict[str, Any],
-        shortname: str = "auto",
+        shortname: str = "auto",  # Default is to automatically generate the shortname (first 8 chars of the uuid)
         resource_type: ResourceType = ResourceType.content,
     ) -> DmartResponse:
         return await self.__request(
@@ -301,19 +393,20 @@ class DmartService:
         shortname: str,
         retrieve_attachments: bool = False,
         resource_type: ResourceType = ResourceType.content,
-    ) -> DmartResponse:
-        return await self.__api(
+    ) -> Entry:
+        response = await self.__raw_api(
             (
                 f"/managed/entry/{resource_type}/{space_name}/{subpath}/{shortname}"
                 f"?retrieve_json_payload=true&retrieve_attachments={retrieve_attachments}"
             ),
             RequestMethod.get,
         )
+        return Entry.model_validate(response)
 
     async def read_json_payload(
         self, space_name: str, subpath: str, shortname: str
-    ) -> DmartResponse:
-        return await self.__api(
+    ) -> Any:
+        return await self.__raw_api(
             f"/managed/payload/content/{space_name}/{subpath}/{shortname}.json",
             RequestMethod.get,
         )
