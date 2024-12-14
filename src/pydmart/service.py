@@ -181,11 +181,17 @@ class DmartResponse(BaseModel):
 
 class DmartService:
     
-    session : aiohttp.ClientSession
+    session : aiohttp.ClientSession | None = None #  = aiohttp.ClientSession() # connector=aiohttp.TCPConnector())
 
     @classmethod
-    def create_session_pool(cls):
-        if not cls.session:
+    async def delete_session_pool(cls):
+        if hasattr(cls, 'session') and cls.session:
+            await cls.session.close()
+            cls.session = None
+
+    @classmethod
+    async def create_session_pool(cls):
+        if hasattr(cls, 'session') and not cls.session:
             cls.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector())
 
 
@@ -193,7 +199,7 @@ class DmartService:
         self.dmart_url = url
         self.username = username
         self.password = password
-        self.create_session_pool()
+        # self.create_session_pool()
 
         
     async def connect(self):
@@ -201,6 +207,8 @@ class DmartService:
             "shortname": self.username,
             "password": self.password,
         }
+        if not self.session: 
+            raise Exception("Connection pool is not valid")
         async with self.session.post(url=f"{self.dmart_url}/user/login", headers={"Content-Type": "application/json"}, json=json) as response:
             resp_json = await response.json()
             if (resp_json.get("status", "failed") == "failed" or not resp_json.get("records")):
@@ -268,6 +276,8 @@ class DmartService:
         if not self.auth_token:
             raise DmartException(status_code=401, error=Error(code=10, type="login", message="Not authenticated Dmart user"))
 
+        if not self.session: 
+            raise Exception("Connection pool is not valid")
         async with self.session.request(method.value, f"{self.dmart_url}{endpoint}", headers=self.json_headers if json else self.headers, json=json, data=data) as response:
             resp_json = await response.json()
             if response is None or response.status != 200:
