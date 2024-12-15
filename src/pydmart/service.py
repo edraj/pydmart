@@ -159,18 +159,18 @@ class Entry(BaseModel):
     shortname: str
     subpath: str
     is_active: bool
-    displayname: Translation
-    description: Translation
-    tags: list[str]
+    displayname: Translation | None = None
+    description: Translation | None = None
+    tags: list[str] = []
     created_at: str
-    updated_at: str
+    updated_at: str | None = None
     owner_shortname: str
     payload: Payload | None = None
     relationships: Relationship | None = None
     attachments: dict | None = None
-    acl: list[dict]
-    workflow_shortname: str
-    state: str
+    acl: list[dict] = []
+    workflow_shortname: str | None = None
+    state: str | None = None
 
 
 class DmartResponse(BaseModel):
@@ -295,7 +295,7 @@ class DmartService:
         json: dict[str, Any] | None = None,
         data: aiohttp.FormData | None = None,
     ) -> DmartResponse:
-            response = self.__raw_api(endpoint, method, json, data)
+            response = await self.__raw_api(endpoint, method, json, data)
             return DmartResponse.model_validate(response) 
 
     async def __request(
