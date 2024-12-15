@@ -8,7 +8,7 @@ This is a Python Dmart client used to interact with a Dmart instance
 Pydmart is distributed via [PyPI](https://pypi.org/project/pydmart/):
 
 ```python
-pip install pydmart2
+pip install pydmart
 ```
 
 ## Example
