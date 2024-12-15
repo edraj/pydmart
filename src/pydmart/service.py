@@ -157,20 +157,20 @@ class Record(BaseModel):
 class Entry(BaseModel): 
     uuid: str
     shortname: str
-    subpath: str
     is_active: bool
-    displayname: Translation | None = None
-    description: Translation | None = None
     tags: list[str] = []
     created_at: str
     updated_at: str | None = None
     owner_shortname: str
     payload: Payload | None = None
-    relationships: Relationship | None = None
-    attachments: dict | None = None
-    acl: list[dict] = []
-    workflow_shortname: str | None = None
     state: str | None = None
+    workflow_shortname: str | None = None
+    attachments: dict | None = None
+    # subpath: str
+    displayname: Translation | None = None
+    description: Translation | None = None
+    relationships: Relationship | None = None
+    acl: list[dict] = []
 
 
 class DmartResponse(BaseModel):
