@@ -1,5 +1,5 @@
 from io import BytesIO
-import json
+import json as libjson
 import aiohttp
 from enum import StrEnum
 from typing import Any, BinaryIO
@@ -13,8 +13,8 @@ SHORTNAME = "^[a-zA-Z\u0621-\u064A0-9\u0660-\u0669_]{1,64}$"
 class Status(StrEnum):
     success = "success"
     failed = "failed"
-    
-    
+
+
 class RequestType(StrEnum):
     create = "create"
     update = "update"
@@ -23,8 +23,8 @@ class RequestType(StrEnum):
     r_replace = "replace"
     delete = "delete"
     move = "move"
-    
-    
+
+
 class RequestMethod(StrEnum):
     get = "get"
     post = "post"
@@ -154,7 +154,7 @@ class Record(BaseModel):
         if self.subpath != "/":
             self.subpath = self.subpath.strip("/")
 
-class Entry(BaseModel): 
+class Entry(BaseModel):
     uuid: str
     shortname: str
     is_active: bool
@@ -164,12 +164,13 @@ class Entry(BaseModel):
     owner_shortname: str
     payload: Payload | None = None
     state: str | None = None
+    is_open : bool | None = None
     workflow_shortname: str | None = None
     attachments: dict | None = None
     # subpath: str
     displayname: Translation | None = None
     description: Translation | None = None
-    relationships: Relationship | None = None
+    relationships: list[Relationship] | None = None
     acl: list[dict] = []
 
 
@@ -180,7 +181,7 @@ class DmartResponse(BaseModel):
     attributes: dict[str, Any] | None = None
 
 class DmartService:
-    
+
     session : aiohttp.ClientSession | None = None #  = aiohttp.ClientSession() # connector=aiohttp.TCPConnector())
 
     @classmethod
@@ -201,18 +202,18 @@ class DmartService:
         self.password = password
         # self.create_session_pool()
 
-        
+
     async def connect(self):
         json = {
             "shortname": self.username,
             "password": self.password,
         }
-        if not self.session: 
-            raise Exception("Connection pool is not valid")
+        if not self.session:
+            raise Exception("Connection pool is not valid [1]")
         async with self.session.post(url=f"{self.dmart_url}/user/login", headers={"Content-Type": "application/json"}, json=json) as response:
             resp_json = await response.json()
             if (resp_json.get("status", "failed") == "failed" or not resp_json.get("records")):
-                raise ConnectionError("Failed to connect to the Dmart instance, invalid url or credentials") 
+                raise ConnectionError("Failed to connect to the Dmart instance, invalid url or credentials")
 
             self.auth_token = resp_json["records"][0]["attributes"]["access_token"]
 
@@ -229,7 +230,7 @@ class DmartService:
         return {
             "Authorization": f"Bearer {self.auth_token}",
         }
-            
+
     # async def login(self, username: str, password: str) -> None:
     #     json = {
     #         "shortname": username,
@@ -248,7 +249,7 @@ class DmartService:
     #             and resp_json["error"]["type"] == "jwtauth")
     #             or not resp_json.get("records")
     #         ):
-    #             return 
+    #             return
     #
     #         print(f"\n\n {resp_json = } \n\n")
     #         self.auth_token = resp_json["records"][0]["attributes"]["access_token"]
@@ -259,13 +260,13 @@ class DmartService:
             method=RequestMethod.post
         )
         self.auth_token = None
-        
+
     async def get_profile(self) -> DmartResponse:
         return await self.__api(
             endpoint="/user/profile",
             method=RequestMethod.get
         )
-    
+
     async def __raw_api(
         self,
         endpoint: str,
@@ -276,17 +277,18 @@ class DmartService:
         if not self.auth_token:
             raise DmartException(status_code=401, error=Error(code=10, type="login", message="Not authenticated Dmart user"))
 
-        if not self.session: 
-            raise Exception("Connection pool is not valid")
+        if not self.session:
+            raise Exception("Connection pool is not valid [2]")
         async with self.session.request(method.value, f"{self.dmart_url}{endpoint}", headers=self.json_headers if json else self.headers, json=json, data=data) as response:
             resp_json = await response.json()
+            # print(libjson.dumps(resp_json))
             if response is None or response.status != 200:
                 raise DmartException(
                     status_code = response.status,
                     error = Error.model_validate(resp_json["error"])
                 )
 
-            return resp_json 
+            return resp_json
 
     async def __api(
         self,
@@ -296,7 +298,7 @@ class DmartService:
         data: aiohttp.FormData | None = None,
     ) -> DmartResponse:
             response = await self.__raw_api(endpoint, method, json, data)
-            return DmartResponse.model_validate(response) 
+            return DmartResponse.model_validate(response)
 
     async def __request(
         self,
@@ -349,7 +351,7 @@ class DmartService:
         payload_file_name: str,
         payload_mime_type: str,
     ):
-        record_file = BytesIO(bytes(json.dumps(record), "utf-8"))
+        record_file = BytesIO(bytes(libjson.dumps(record), "utf-8"))
 
         data = aiohttp.FormData()
         data.add_field(
@@ -395,7 +397,7 @@ class DmartService:
                 "query_string": query_string
             },
         )
-        
+
     async def read(
         self,
         space_name: str,
@@ -468,7 +470,7 @@ class DmartService:
         action: str,
         cancellation_reasons: str | None = None,
     ) -> DmartResponse:
-        request_body = None
+        request_body = {}
         if cancellation_reasons:
             request_body = {"resolution": cancellation_reasons}
         return await self.__api(
@@ -497,5 +499,3 @@ class DmartService:
             ],
         }
         return await self.__api("/managed/request", RequestMethod.post, json)
-
-
