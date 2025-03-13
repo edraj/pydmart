@@ -1,6 +1,6 @@
 # Pydmart
 
-This is a Python Dmart client (v1.3.4) used to interact with a Dmart instance
+This is a Python Dmart client (v1.3.x) used to interact with a Dmart instance
 
 
 ## Installation

@@ -1,18 +1,19 @@
 import json
 import aiohttp
-from typing import Any, Dict, List, Optional, Union
-from src.pydmart.models import (
-    ApiResponse, LoginResponseRecord, ActionResponse, ResponseEntry, ProfileResponse, QueryRequest, ActionRequest,
+from typing import Any, Dict, List, Optional
+from .models import (
+    ApiResponse, ActionResponse, ResponseEntry, QueryRequest, ActionRequest,
     DmartException, Error
 )
-from src.pydmart.enums import QueryType, SortType, ResourceType, ContentType
+from .enums import QueryType, ResourceType, ContentType
 
 class DmartService:
     base_url = "http://localhost:8282"
-
+    current_user_roles = []
+    current_user_permissions = []
     def __init__(self, base_url: str):
-        self.base_url = base_url
-        self.auth_token = None
+        self.base_url: str = base_url
+        self.auth_token: str = ""
 
     @property
     def json_headers(self) -> Dict[str, str]:
@@ -42,7 +43,10 @@ class DmartService:
 
     async def login(self, shortname: str, password: str) -> ApiResponse:
         try:
-            data = await self._request("POST", f"{self.base_url}/user/login", json={"shortname": shortname, "password": password})
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.request("POST", f"{self.base_url}/user/login", json={"shortname": shortname, "password": password}) as response:
+                    data = await response.json()
             if isinstance(data, dict):
                 self.auth_token = data["records"][0]["attributes"]["access_token"]
                 return ApiResponse(**data)
@@ -73,14 +77,12 @@ class DmartService:
     async def check_existing(self, prop: str, value: str) -> ResponseEntry:
         return await self._request("GET", f"{self.base_url}/user/check-existing?{prop}={value}", headers=self.headers)
 
-    async def get_profile(self) -> ProfileResponse:
+    async def get_profile(self) -> ApiResponse:
         data = await self._request("GET", f"{self.base_url}/user/profile", headers=self.headers)
-        if data.get("status") == "success":
-            # Assuming localStorage is a dictionary for this example
-            localStorage = {}
-            localStorage["permissions"] = data.get("records", [{}])[0].get("attributes", {}).get("permissions")
-            localStorage["roles"] = data.get("records", [{}])[0].get("attributes", {}).get("roles")
-        return ProfileResponse(**data)
+        if data.status == "success":
+            self.current_user_permissions = data.records[0].attributes.get("permissions")
+            self.current_user_roles = data.records[0].attributes.get("roles")
+        return data
 
     async def query(self, query: QueryRequest, scope: str = "managed") -> ApiResponse:
         return await self._request("POST", f"{self.base_url}/{scope}/query", json=query.model_dump(), headers=self.json_headers)

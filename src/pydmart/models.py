@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Set, Union
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from src.pydmart.enums import ContentType, ResourceType, QueryType, SortType, Status, RequestType
+from .enums import ContentType, ResourceType, QueryType, SortType, Status, RequestType
 
 
 class Error(BaseModel):
@@ -26,13 +26,16 @@ class ApiResponseRecord(BaseModel):
     shortname: str
     branch_name: Optional[str] = None
     subpath: str
-    attributes: Dict[str, Any]
+    attributes: Optional[Dict[str, Any] ]= None
 
 
 class ApiResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="allow",
+    )
     status: Status
     error: Optional[Error] = None
-    records: List[ApiResponseRecord]
+    records: Optional[List[ApiResponseRecord]] = None
 
 
 class Translation(BaseModel):
@@ -54,12 +57,6 @@ class Permission(BaseModel):
 
 class ProfileResponseRecord(ApiResponseRecord):
     attributes: Dict[str, Any]
-
-
-class ProfileResponse(BaseModel):
-    status: Status
-    error: Optional[Error] = None
-    records: List[ProfileResponseRecord]
 
 
 class AggregationReducer(BaseModel):
