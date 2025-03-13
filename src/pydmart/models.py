@@ -96,35 +96,35 @@ class QueryRequest(BaseModel):
 class Payload(BaseModel):
     content_type: ContentType
     schema_shortname: Optional[str] = None
-    checksum: str
-    body: Union[str, Dict[str, Any], Any]
-    last_validated: str
-    validation_status: str
+    checksum: Optional[str] = None
+    body: Optional[Union[str, Dict[str, Any], Any]] = None
+    last_validated: Optional[str] = None
+    validation_status: Optional[str] = None
 
 
 class MetaExtended(BaseModel):
-    email: str
-    msisdn: str
-    is_email_verified: bool
-    is_msisdn_verified: bool
-    force_password_change: bool
-    password: str
-    workflow_shortname: str
-    state: str
-    is_open: bool
+    email: Optional[str] = None
+    msisdn: Optional[str] = None
+    is_email_verified: Optional[bool] = None
+    is_msisdn_verified: Optional[bool] = None
+    force_password_change: Optional[bool] = None
+    password: Optional[str] = None
+    workflow_shortname: Optional[str] = None
+    state: Optional[str] = None
+    is_open: Optional[bool] = None
 
 
 class ResponseEntry(MetaExtended):
     uuid: str
-    shortname: str
-    subpath: str
+    shortname: str = None
+    subpath: str = None
     is_active: bool
-    displayname: Translation
-    description: Translation
+    displayname: Optional[Translation] = None
+    description: Optional[Translation] = None
     tags: Set[str]
-    created_at: str
+    created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    owner_shortname: str
+    owner_shortname: Optional[str] = None
     payload: Optional[Payload] = None
     relationships: Optional[Any] = None
     attachments: Optional[Dict[str, Any]] = None

@@ -43,7 +43,6 @@ class DmartService:
 
     async def login(self, shortname: str, password: str) -> ApiResponse:
         try:
-            
             async with aiohttp.ClientSession() as session:
                 async with session.request("POST", f"{self.base_url}/user/login", json={"shortname": shortname, "password": password}) as response:
                     data = await response.json()
@@ -108,7 +107,16 @@ class DmartService:
         scope: str = "managed"
     ) -> ResponseEntry:
         url = f"{scope}/entry/{resource_type}/{space_name}/{subpath}/{shortname}?retrieve_json_payload={retrieve_json_payload}&retrieve_attachments={retrieve_attachments}&validate_schema={validate_schema}"
-        return await self._request("GET", f"{self.base_url}/{url}", headers=self.headers)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.request("GET", f"{self.base_url}/{url}", headers=self.headers) as response:
+                    data = await response.json()
+                    return ResponseEntry(**data)
+        except aiohttp.ClientResponseError as e:
+            error = await e.response.json()
+            return DmartException(status_code=e.status, error=Error(**error))
+        except aiohttp.ClientError as e:
+            return DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
     async def upload_with_payload(
         self,
