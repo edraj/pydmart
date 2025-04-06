@@ -16,7 +16,7 @@ class DmartException(Exception):
     error: Error
 
     def __init__(self, status_code: int, error: Error):
-        super().__init__(status_code)
+        super().__init__(error)
         self.status_code = status_code
         self.error = error
 
@@ -24,9 +24,8 @@ class DmartException(Exception):
 class ApiResponseRecord(BaseModel):
     resource_type: str
     shortname: str
-    branch_name: Optional[str] = None
     subpath: str
-    attributes: Optional[Dict[str, Any] ]= None
+    attributes: Dict[str, Any]
 
 
 class ApiResponse(BaseModel):
@@ -35,7 +34,7 @@ class ApiResponse(BaseModel):
     )
     status: Status
     error: Optional[Error] = None
-    records: Optional[List[ApiResponseRecord]] = None
+    records: List[ApiResponseRecord]
 
 
 class Translation(BaseModel):

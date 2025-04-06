@@ -34,12 +34,22 @@ class DmartService:
             async with aiohttp.ClientSession() as session:
                 async with session.request(method, url, **kwargs) as response:
                     data = await response.json()
-                    return ApiResponse(**data)
+                    try:
+                        return ApiResponse(**data)
+                    except Exception as e:
+                        print('Error:', data)
+                        err = data.get('error', {
+                            'type': 'request',
+                            'code': 500,
+                            'message': e
+                        })
+                        error = Error(**err)
+                        raise DmartException(status_code=400, error=error)
         except aiohttp.ClientResponseError as e:
             error = await e.response.json()
-            return DmartException(status_code=e.status, error=Error(**error))
+            raise DmartException(status_code=e.status, error=Error(**error))
         except aiohttp.ClientError as e:
-            return DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
+            raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
     async def login(self, shortname: str, password: str) -> ApiResponse:
         try:
@@ -114,9 +124,9 @@ class DmartService:
                     return ResponseEntry(**data)
         except aiohttp.ClientResponseError as e:
             error = await e.response.json()
-            return DmartException(status_code=e.status, error=Error(**error))
+            raise DmartException(status_code=e.status, error=Error(**error))
         except aiohttp.ClientError as e:
-            return DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
+            raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
     async def upload_with_payload(
         self,
