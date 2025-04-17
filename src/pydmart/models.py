@@ -26,6 +26,7 @@ class ApiResponseRecord(BaseModel):
     shortname: str
     subpath: str
     attributes: Dict[str, Any]
+    attachments: Optional[Dict[str, Any]] = None
 
 
 class ApiResponse(BaseModel):
@@ -38,9 +39,9 @@ class ApiResponse(BaseModel):
 
 
 class Translation(BaseModel):
-    ar: str
-    en: str
-    kd: str
+    en: str | None = None
+    ar: str | None = None
+    ku: str | None = None
 
 
 class LoginResponseRecord(ApiResponseRecord):
