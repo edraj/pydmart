@@ -136,7 +136,8 @@ class DmartService:
         resource_type: ResourceType,
         payload_file: Any,
         content_type: Optional[ContentType] = None,
-        schema_shortname: Optional[str] = None
+        schema_shortname: Optional[str] = None,
+        scope: str = "managed"
     ) -> ApiResponse:
         request_record_body = {
             "resource_type": resource_type,
@@ -154,7 +155,7 @@ class DmartService:
         form_data.add_field("request_record", json.dumps(request_record_body), content_type="application/json")
         form_data.add_field("payload_file", payload_file)
 
-        return await self._request("POST", f"{self.base_url}/managed/resource_with_payload", data=form_data, headers=self.headers)
+        return await self._request("POST", f"{self.base_url}/{scope}/resource_with_payload", data=form_data, headers=self.headers)
 
     async def fetch_data_asset(
         self,
