@@ -35,7 +35,7 @@ class ApiResponse(BaseModel):
     )
     status: Status
     error: Optional[Error] = None
-    records: List[ApiResponseRecord]
+    records: List[ApiResponseRecord] = []
 
 
 class Translation(BaseModel):
@@ -49,9 +49,9 @@ class LoginResponseRecord(ApiResponseRecord):
 
 
 class Permission(BaseModel):
-    allowed_actions: List[str]
-    conditions: List[str]
-    restricted_fields: List[Any]
+    allowed_actions: List[str] = []
+    conditions: List[str] = []
+    restricted_fields: List[Any] = []
     allowed_fields_values: Dict[str, Any]
 
 
@@ -62,12 +62,12 @@ class ProfileResponseRecord(ApiResponseRecord):
 class AggregationReducer(BaseModel):
     name: str
     alias: str
-    args: List[str]
+    args: List[str] = []
 
 
 class AggregationType(BaseModel):
-    load: List[str]
-    group_by: List[str]
+    load: List[str] = []
+    group_by: List[str] = []
     reducers: Union[List[AggregationReducer], List[str]]
 
 
@@ -141,7 +141,7 @@ class ResponseRecord(BaseModel):
 class ActionResponse(BaseModel):
     status: Status
     error: Optional[Error] = None
-    records: List[ResponseRecord]
+    records: List[ResponseRecord] = []
 
 
 class ActionRequestRecord(BaseModel):
@@ -156,4 +156,4 @@ class ActionRequestRecord(BaseModel):
 class ActionRequest(BaseModel):
     space_name: str
     request_type: RequestType
-    records: List[ActionRequestRecord]
+    records: List[ActionRequestRecord] = []
