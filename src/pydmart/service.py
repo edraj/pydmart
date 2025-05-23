@@ -41,7 +41,7 @@ class DmartService:
                         err = data.get('error', {
                             'type': 'request',
                             'code': 500,
-                            'message': e
+                            'message': str(e)
                         })
                         error = Error(**err)
                         raise DmartException(status_code=400, error=error)

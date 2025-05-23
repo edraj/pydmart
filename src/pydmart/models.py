@@ -35,7 +35,7 @@ class ApiResponse(BaseModel):
     )
     status: Status
     error: Optional[Error] = None
-    records: List[ApiResponseRecord] = []
+    records: List[ApiResponseRecord] = Field(default=[])
 
 
 class Translation(BaseModel):
