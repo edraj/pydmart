@@ -276,9 +276,18 @@ class DmartService:
         space_name: str,
         schema_shortname: str,
         subpath: str,
-        record: Dict[str, Any]
+        record: Dict[str, Any],
+        resource_type: Optional[ResourceType] = None,
+        workflow_shortname: Optional[str] = None
     ) -> Dict[str, Any]:
-        return await self._request("POST", f"{self.base_url}/public/submit/{space_name}/{schema_shortname}/{subpath}", json=record, headers=self.json_headers)
+        url = f"{self.base_url}/public/submit/{space_name}"
+        if resource_type:
+            url += f"/{resource_type.value}"
+        if workflow_shortname:
+            url += f"/{workflow_shortname}"
+        url += f"/{schema_shortname}/{subpath}"
+
+        return await self._request("POST", url, json=record, headers=self.json_headers)
 
     async def get_manifest(self) -> Dict[str, Any]:
         return await self._request("GET", f"{self.base_url}/info/manifest", headers=self.headers)
