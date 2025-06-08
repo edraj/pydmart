@@ -222,37 +222,17 @@ class DmartService:
     async def get_space_health(self, space_name: str) -> Dict[str, Any]:
         return await self._request("GET", f"{self.base_url}/managed/health/{space_name}", headers=self.headers)
 
-    async def get_attachment_content(
-        self,
-        resource_type: str,
-        space_name: str,
-        subpath: str,
-        shortname: str,
-        scope: str = "managed"
-    ) -> Dict[str, Any]:
-        return await self._request("GET", f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{shortname}", headers=self.headers)
-
     async def get_payload(
         self,
         resource_type: str,
         space_name: str,
         subpath: str,
         shortname: str,
+        schema_shortname: str = "",
         ext: str = ".json",
         scope: str = "managed"
     ) -> Dict[str, Any]:
-        return await self._request("GET", f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{shortname}{ext}", headers=self.headers)
-
-    async def get_payload_content(
-        self,
-        resource_type: str,
-        space_name: str,
-        subpath: str,
-        shortname: str,
-        ext: str = ".json",
-        scope: str = "managed"
-    ) -> Dict[str, Any]:
-        return await self._request("GET", f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{shortname}{ext}", headers=self.headers)
+        return await self._request("GET", f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{shortname}{schema_shortname}{ext}", headers=self.headers)
 
     async def progress_ticket(
         self,
