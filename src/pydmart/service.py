@@ -269,6 +269,60 @@ class DmartService:
 
         return await self._request("POST", url, json=record, headers=self.json_headers)
 
+    async def otp_request(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
+        payload = {}
+        if msisdn:
+            payload["msisdn"] = msisdn
+        if email:
+            payload["email"] = email
+
+        headers = self.json_headers
+        if accept_language:
+            headers["Accept-Language"] = accept_language
+
+        return await self._request("POST", f"{self.base_url}/user/otp-request", json=payload, headers=headers)
+
+    async def otp_request_login(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
+        payload = {}
+        if msisdn:
+            payload["msisdn"] = msisdn
+        if email:
+            payload["email"] = email
+
+        headers = self.json_headers
+        if accept_language:
+            headers["Accept-Language"] = accept_language
+
+        return await self._request("POST", f"{self.base_url}/user/otp-request-login", json=payload, headers=headers)
+
+    async def password_reset_request(self, msisdn: Optional[str] = None, shortname: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
+        payload = {}
+        if msisdn:
+            payload["msisdn"] = msisdn
+        if shortname:
+            payload["shortname"] = shortname
+        if email:
+            payload["email"] = email
+
+        return await self._request("POST", f"{self.base_url}/user/password-reset-request", json=payload, headers=self.json_headers)
+
+    async def confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
+        payload = {
+            "otp": otp
+        }
+        if msisdn:
+            payload["msisdn"] = msisdn
+        if email:
+            payload["email"] = email
+
+        return await self._request("POST", f"{self.base_url}/user/otp-confirm", json=payload, headers=self.json_headers)
+
+    async def user_reset(self, shortname: str) -> ApiResponse:
+        return await self._request("POST", f"{self.base_url}/user/reset", json={"shortname": shortname}, headers=self.json_headers)
+
+    async def validate_password(self, password: str) -> ApiResponse:
+        return await self._request("POST", f"{self.base_url}/user/validate_password", json={"password": password}, headers=self.json_headers)
+
     async def get_manifest(self) -> Dict[str, Any]:
         return await self._request("GET", f"{self.base_url}/info/manifest", headers=self.headers)
 

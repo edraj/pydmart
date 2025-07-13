@@ -95,6 +95,27 @@ Updates an existing user with the provided request data.
 * `check_existing(prop: str, value: str) -> ResponseEntry`
 Checks if a user exists based on the provided property and value.
 
+* `otp_request(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None)`
+Requests an OTP (One Time Password) for the provided MSISDN or email.
+
+* `otp_verify(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse`
+Verifies the provided OTP for the given MSISDN or email.
+
+* `otp_request_login(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None)`
+Requests an OTP for login using the provided MSISDN or email.
+
+* `password_reset_request(self, msisdn: Optional[str] = None, shortname: Optional[str] = None, email: Optional[str] = None)`
+Requests a password reset for the provided MSISDN, shortname, or email.
+
+* `confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None)`
+Verifies the provided OTP for password reset using the given MSISDN or email.
+
+* `user_reset(self, shortname: str)`
+Performs a user reset action for the specified shortname.
+
+* `validate_password(self, password: str)`
+Validates the provided password against the Dmart password policy.
+
 * `get_profile() -> ProfileResponse`
 Gets the profile of the current user.
 
