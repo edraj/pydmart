@@ -4,5 +4,5 @@
 pip wheel .
 python3 -m build
 python3 -m build --sdist .
-twine upload --non-interactive dist/pydmart-1.3.1.tar.gz
-twine upload --non-interactive dist/pydmart-1.3.1-py3-none-any.whl
+twine upload --non-interactive dist/pydmart-1.3.2.tar.gz
+twine upload --non-interactive dist/pydmart-1.3.2-py3-none-any.whl
