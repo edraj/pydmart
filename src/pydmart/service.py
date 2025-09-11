@@ -65,9 +65,10 @@ class DmartService:
                 async with session.request(method, url, **kwargs) as response:
                     data = await response.json()
                     try:
+                        if data['status'] == 'failed':
+                            raise DmartException(status_code=400, error=Error(**data['error']))
                         return ApiResponse(**data)
                     except Exception as e:
-                        print('Error:', data)
                         err = data.get('error', {
                             'type': 'request',
                             'code': 500,
@@ -187,6 +188,8 @@ class DmartService:
             async with aiohttp.ClientSession() as session:
                 async with session.request("GET", f"{self.base_url}/{url}", headers=self.headers) as response:
                     data = await response.json()
+                    if data.get('status') == 'failed':
+                        raise DmartException(status_code=400, error=Error(**data['error']))
                     return ResponseEntry(**data)
         except aiohttp.ClientResponseError as e:
             error = await e.response.json()
