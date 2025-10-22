@@ -152,9 +152,9 @@ class DmartService:
         """Export a query as CSV data (server-side generation)."""
         return await self._request("POST", f"{self.base_url}/managed/csv", json=query.model_dump(), headers=self.json_headers)
 
-    async def space(self, action: ActionRequest) -> ActionResponse:
-        """Perform a space-level management action."""
-        return await self._request("POST", f"{self.base_url}/managed/space", json=action.model_dump(), headers=self.json_headers)
+    # async def space(self, action: ActionRequest) -> ActionResponse:
+    #     """Perform a space-level management action."""
+    #     return await self._request("POST", f"{self.base_url}/managed/space", json=action.model_dump(), headers=self.json_headers)
 
     async def request(self, action: ActionRequest) -> ActionResponse:
         """Perform a generic managed request (create/update/etc.)."""
