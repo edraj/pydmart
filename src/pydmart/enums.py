@@ -42,7 +42,7 @@ class SortType(StrEnum):
 class RequestType(StrEnum):
     create = "create"
     update = "update"
-    replace = "replace"
+    progress_ticket = "progress_ticket"
     delete = "delete"
     move = "move"
     update_acl = "update_acl"

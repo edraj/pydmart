@@ -89,7 +89,14 @@ class DmartService:
                 async with session.request("POST", f"{self.base_url}/user/login", json={"shortname": shortname, "password": password}) as response:
                     data = await response.json()
             if isinstance(data, dict):
-                self.auth_token = data["records"][0]["attributes"]["access_token"]
+                if not "records" in data and len(data["records"]) == 0:
+                    raise DmartException(
+                        status_code=500,
+                        error=Error(type="ClientError", code=500, message="Invalid response", info=[data])
+                    )
+                record = data["records"][0]
+                if "attributes" in record:
+                    self.auth_token = record["attributes"].get("access_token", None)
                 return ApiResponse(**data)
             else:
                 raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message="Invalid response", info=[]))
