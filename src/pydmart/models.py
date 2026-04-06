@@ -116,8 +116,8 @@ class MetaExtended(BaseModel):
 
 class ResponseEntry(MetaExtended):
     uuid: str
-    shortname: str = None
-    subpath: str = None
+    shortname: Optional[str] = None
+    subpath: Optional[str] = None
     is_active: bool
     displayname: Optional[Translation] = None
     description: Optional[Translation] = None
