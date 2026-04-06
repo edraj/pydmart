@@ -125,8 +125,7 @@ class DmartService:
         except DmartException:
             raise
         except aiohttp.ClientResponseError as e:
-            error = await e.response.json()
-            raise DmartException(status_code=e.status, error=Error(**error))
+            raise DmartException(status_code=e.status, error=Error(type="ClientResponseError", code=e.status, message=e.message, info=[]))
         except aiohttp.ClientError as e:
             raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
@@ -276,8 +275,7 @@ class DmartService:
         except DmartException:
             raise
         except aiohttp.ClientResponseError as e:
-            error = await e.response.json()
-            raise DmartException(status_code=e.status, error=Error(**error))
+            raise DmartException(status_code=e.status, error=Error(type="ClientResponseError", code=e.status, message=e.message, info=[]))
         except aiohttp.ClientError as e:
             raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
