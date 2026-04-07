@@ -2,10 +2,11 @@ import json
 import aiohttp
 from typing import Any, Dict, List, Optional
 from .models import (
-    ApiResponse, ActionResponse, ResponseEntry, QueryRequest, ActionRequest,
+    ApiResponse, ResponseEntry, QueryRequest, ActionRequest,
     DmartException, Error
 )
 from .enums import QueryType, ResourceType, ContentType
+
 
 class DmartService:
     """High-level async client for the Dmart HTTP API.
@@ -15,15 +16,19 @@ class DmartService:
     authentication token. Most methods return pydantic models that mirror the
     API responses.
 
+    Supports async context manager protocol for automatic session lifecycle::
+
+        async with DmartService("https://api.example.com") as service:
+            await service.login("user", "pass")
+            data = await service.get_spaces()
+
     Attributes:
         base_url: Base endpoint of the Dmart service, e.g. https://api.example.com
         auth_token: Bearer token assigned upon successful login.
         current_user_roles: Cached roles from the user profile, if fetched.
         current_user_permissions: Cached permissions from the user profile, if fetched.
     """
-    base_url = "http://localhost:8282"
-    current_user_roles = []
-    current_user_permissions = []
+
     def __init__(self, base_url: str):
         """Initialize the service.
 
@@ -32,6 +37,42 @@ class DmartService:
         """
         self.base_url: str = base_url
         self.auth_token: str = ""
+        self.current_user_roles: List[str] = []
+        self.current_user_permissions: List[Any] = []
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def __aenter__(self) -> "DmartService":
+        """Enter the async context manager; creates a reusable HTTP session."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit the async context manager; closes the HTTP session."""
+        await self.close()
+
+    async def connect(self) -> None:
+        """Create the underlying aiohttp session for connection pooling.
+
+        Call this once before making requests, or use the async context
+        manager instead. Safe to call multiple times.
+        """
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+
+    async def close(self) -> None:
+        """Close the underlying aiohttp session.
+
+        Always call this when done, or use the async context manager.
+        """
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Return the current session, creating one lazily if needed."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
 
     @property
     def json_headers(self) -> Dict[str, str]:
@@ -48,8 +89,7 @@ class DmartService:
             "Authorization": f"Bearer {self.auth_token}" if self.auth_token else "",
         }
 
-
-    async def _request(self, method: str, url: str, **kwargs) -> Any:
+    async def _request(self, method: str, url: str, **kwargs: Any) -> ApiResponse:
         """Low-level request wrapper that normalizes responses and errors.
 
         Args:
@@ -58,67 +98,92 @@ class DmartService:
             **kwargs: Passed through to aiohttp.ClientSession.request.
 
         Returns:
-            ApiResponse or parsed model when possible; raises DmartException otherwise.
+            ApiResponse parsed from the server response.
+
+        Raises:
+            DmartException: On HTTP errors or when the server returns a
+                failure status.
         """
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request(method, url, **kwargs) as response:
-                    data = await response.json()
-                    try:
-                        if data['status'] == 'failed':
-                            raise DmartException(status_code=400, error=Error(**data['error']))
-                        return ApiResponse(**data)
-                    except Exception as e:
-                        err = data.get('error', {
-                            'type': 'request',
-                            'code': 500,
-                            'message': str(e)
-                        })
-                        error = Error(**err)
-                        raise DmartException(status_code=400, error=error)
+            session = await self._get_session()
+            async with session.request(method, url, **kwargs) as response:
+                data = await response.json()
+                try:
+                    if data['status'] == 'failed':
+                        raise DmartException(status_code=400, error=Error(**data['error']))
+                    return ApiResponse(**data)
+                except DmartException:
+                    raise
+                except Exception as e:
+                    err = data.get('error', {
+                        'type': 'request',
+                        'code': 500,
+                        'message': str(e)
+                    })
+                    error = Error(**err)
+                    raise DmartException(status_code=400, error=error)
+        except DmartException:
+            raise
         except aiohttp.ClientResponseError as e:
-            error = await e.response.json()
-            raise DmartException(status_code=e.status, error=Error(**error))
+            raise DmartException(status_code=e.status, error=Error(type="ClientResponseError", code=e.status, message=e.message, info=[]))
         except aiohttp.ClientError as e:
             raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
     async def login(self, shortname: str, password: str) -> ApiResponse:
-        """Login with shortname and password; stores auth token on success."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request("POST", f"{self.base_url}/user/login", json={"shortname": shortname, "password": password}) as response:
-                    data = await response.json()
-            if isinstance(data, dict):
-                if not "records" in data and len(data["records"]) == 0:
-                    raise DmartException(
-                        status_code=500,
-                        error=Error(type="ClientError", code=500, message="Invalid response", info=[data])
-                    )
-                record = data["records"][0]
-                if "attributes" in record:
-                    self.auth_token = record["attributes"].get("access_token", None)
-                return ApiResponse(**data)
-            else:
-                raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message="Invalid response", info=[]))
-        except DmartException as e:
-            raise e
-        except aiohttp.ClientResponseError as e:
-            error = await e.response.json()
-            raise DmartException(status_code=e.status, error=Error(**error))
-        except aiohttp.ClientError as e:
-            raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
+        """Login with shortname and password; stores auth token on success.
+
+        Args:
+            shortname: User shortname.
+            password: User password.
+
+        Returns:
+            ApiResponse containing the login record with access_token.
+
+        Raises:
+            DmartException: On invalid credentials or malformed response.
+        """
+        data = await self._request(
+            "POST",
+            f"{self.base_url}/user/login",
+            json={"shortname": shortname, "password": password},
+        )
+        if not data.records or len(data.records) == 0:
+            raise DmartException(
+                status_code=500,
+                error=Error(type="ClientError", code=500, message="Invalid response: no records", info=[])
+            )
+        record = data.records[0]
+        if record.attributes:
+            self.auth_token = record.attributes.get("access_token", "")
+        return data
 
     async def login_by(self, credentials: Dict[str, Any], password: str) -> ApiResponse:
-        """Login with arbitrary credentials dict plus password; stores auth token."""
-        data = await self._request("POST", f"{self.base_url}/user/login", json={**credentials, "password": password})
-        self.auth_token = data["records"][0]["attributes"]["access_token"]
+        """Login with arbitrary credentials dict plus password; stores auth token.
+
+        Args:
+            credentials: Dict with authentication fields (e.g. email, msisdn).
+            password: User password.
+
+        Returns:
+            ApiResponse containing the login record with access_token.
+
+        Raises:
+            DmartException: On invalid credentials or malformed response.
+        """
+        data = await self._request(
+            "POST",
+            f"{self.base_url}/user/login",
+            json={**credentials, "password": password},
+        )
+        if data.records:
+            self.auth_token = data.records[0].attributes.get("access_token", "")
         return data
 
     async def logout(self) -> ApiResponse:
         """Invalidate current token server-side (if any)."""
         return await self._request("POST", f"{self.base_url}/user/logout", headers=self.headers)
 
-    async def create_user(self, request: Dict[str, Any]) -> ActionResponse:
+    async def create_user(self, request: Dict[str, Any]) -> ApiResponse:
         """Create a new user.
 
         Args:
@@ -126,7 +191,7 @@ class DmartService:
         """
         return await self._request("POST", f"{self.base_url}/user/create", json=request, headers=self.json_headers)
 
-    async def update_user(self, request: Dict[str, Any]) -> ActionResponse:
+    async def update_user(self, request: Dict[str, Any]) -> ApiResponse:
         """Update current user profile attributes.
 
         Args:
@@ -134,16 +199,16 @@ class DmartService:
         """
         return await self._request("POST", f"{self.base_url}/user/profile", json=request, headers=self.json_headers)
 
-    async def check_existing(self, prop: str, value: str) -> ResponseEntry:
+    async def check_existing(self, prop: str, value: str) -> ApiResponse:
         """Check whether a user property already exists (e.g., email or shortname)."""
         return await self._request("GET", f"{self.base_url}/user/check-existing?{prop}={value}", headers=self.headers)
 
     async def get_profile(self) -> ApiResponse:
         """Fetch current user profile and cache permissions/roles on success."""
         data = await self._request("GET", f"{self.base_url}/user/profile", headers=self.headers)
-        if data.status == "success":
-            self.current_user_permissions = data.records[0].attributes.get("permissions")
-            self.current_user_roles = data.records[0].attributes.get("roles")
+        if data.status == "success" and data.records:
+            self.current_user_permissions = data.records[0].attributes.get("permissions", [])
+            self.current_user_roles = data.records[0].attributes.get("roles", [])
         return data
 
     async def query(self, query: QueryRequest, scope: str = "managed") -> ApiResponse:
@@ -159,11 +224,11 @@ class DmartService:
         """Export a query as CSV data (server-side generation)."""
         return await self._request("POST", f"{self.base_url}/managed/csv", json=query.model_dump(), headers=self.json_headers)
 
-    # async def space(self, action: ActionRequest) -> ActionResponse:
-    #     """Perform a space-level management action."""
-    #     return await self._request("POST", f"{self.base_url}/managed/space", json=action.model_dump(), headers=self.json_headers)
+    async def space(self, action: ActionRequest) -> ApiResponse:
+        """Perform a space-level management action."""
+        return await self._request("POST", f"{self.base_url}/managed/space", json=action.model_dump(), headers=self.json_headers)
 
-    async def request(self, action: ActionRequest) -> ActionResponse:
+    async def request(self, action: ActionRequest) -> ApiResponse:
         """Perform a generic managed request (create/update/etc.)."""
         return await self._request("POST", f"{self.base_url}/managed/request", json=action.model_dump(), headers=self.json_headers)
 
@@ -189,18 +254,28 @@ class DmartService:
             retrieve_attachments: Whether to include attachments.
             validate_schema: Validate payload against its schema on server.
             scope: API scope.
+
+        Returns:
+            ResponseEntry with the full resource data.
         """
-        url = f"{scope}/entry/{resource_type}/{space_name}/{subpath}/{shortname}?retrieve_json_payload={retrieve_json_payload}&retrieve_attachments={retrieve_attachments}&validate_schema={validate_schema}"
+        url = (
+            f"{self.base_url}/{scope}/entry/{resource_type}/{space_name}"
+            f"/{subpath}/{shortname}"
+            f"?retrieve_json_payload={retrieve_json_payload}"
+            f"&retrieve_attachments={retrieve_attachments}"
+            f"&validate_schema={validate_schema}"
+        )
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request("GET", f"{self.base_url}/{url}", headers=self.headers) as response:
-                    data = await response.json()
-                    if data.get('status') == 'failed':
-                        raise DmartException(status_code=400, error=Error(**data['error']))
-                    return ResponseEntry(**data)
+            session = await self._get_session()
+            async with session.request("GET", url, headers=self.headers) as response:
+                data = await response.json()
+                if data.get('status') == 'failed':
+                    raise DmartException(status_code=400, error=Error(**data['error']))
+                return ResponseEntry(**data)
+        except DmartException:
+            raise
         except aiohttp.ClientResponseError as e:
-            error = await e.response.json()
-            raise DmartException(status_code=e.status, error=Error(**error))
+            raise DmartException(status_code=e.status, error=Error(type="ClientResponseError", code=e.status, message=e.message, info=[]))
         except aiohttp.ClientError as e:
             raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
@@ -216,7 +291,7 @@ class DmartService:
         scope: str = "managed"
     ) -> ApiResponse:
         """Upload a file together with a JSON payload as a single request."""
-        request_record_body = {
+        request_record_body: Dict[str, Any] = {
             "resource_type": resource_type,
             "subpath": subpath,
             "shortname": shortname,
@@ -244,7 +319,7 @@ class DmartService:
         query_string: str = "SELECT * FROM file",
         filter_data_assets: Optional[List[str]] = None,
         branch_name: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> ApiResponse:
         """Execute a query against a data asset (CSV/Parquet/JSONL/etc.)."""
         return await self._request("POST", f"{self.base_url}/managed/data-asset", json={
             "space_name": space_name,
@@ -300,7 +375,7 @@ class DmartService:
         """Build a direct URL to download an attachment payload."""
         return f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{parent_shortname}/{shortname}{ext or ''}"
 
-    async def get_space_health(self, space_name: str) -> Dict[str, Any]:
+    async def get_space_health(self, space_name: str) -> ApiResponse:
         """Get health information for a space."""
         return await self._request("GET", f"{self.base_url}/managed/health/{space_name}", headers=self.headers)
 
@@ -313,7 +388,7 @@ class DmartService:
         schema_shortname: str = "",
         ext: str = ".json",
         scope: str = "managed"
-    ) -> Dict[str, Any]:
+    ) -> ApiResponse:
         """Fetch raw payload for a resource.
 
         Args:
@@ -325,7 +400,11 @@ class DmartService:
             ext: Extension to fetch (default .json).
             scope: API scope.
         """
-        return await self._request("GET", f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{shortname}{schema_shortname}{ext}", headers=self.headers)
+        return await self._request(
+            "GET",
+            f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{shortname}{schema_shortname}{ext}",
+            headers=self.headers,
+        )
 
     async def progress_ticket(
         self,
@@ -335,15 +414,20 @@ class DmartService:
         action: str,
         resolution: Optional[str] = None,
         comment: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> ApiResponse:
         """Move a ticket through its workflow with optional resolution/comment."""
-        payload = {}
+        payload: Dict[str, str] = {}
         if resolution:
             payload["resolution"] = resolution
         if comment:
             payload["comment"] = comment
 
-        return await self._request("PUT", f"{self.base_url}/managed/progress-ticket/{space_name}/{subpath}/{shortname}/{action}", json=payload, headers=self.json_headers)
+        return await self._request(
+            "PUT",
+            f"{self.base_url}/managed/progress-ticket/{space_name}/{subpath}/{shortname}/{action}",
+            json=payload,
+            headers=self.json_headers,
+        )
 
     async def submit(
         self,
@@ -353,7 +437,7 @@ class DmartService:
         record: Dict[str, Any],
         resource_type: Optional[ResourceType] = None,
         workflow_shortname: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> ApiResponse:
         """Public submit of a record to a space/schema, optionally via workflow."""
         url = f"{self.base_url}/public/submit/{space_name}"
         if resource_type:
@@ -366,13 +450,13 @@ class DmartService:
 
     async def otp_request(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
         """Request an OTP for signup/verification via msisdn or email."""
-        payload = {}
+        payload: Dict[str, str] = {}
         if msisdn:
             payload["msisdn"] = msisdn
         if email:
             payload["email"] = email
 
-        headers = self.json_headers
+        headers = {**self.json_headers}
         if accept_language:
             headers["Accept-Language"] = accept_language
 
@@ -380,13 +464,13 @@ class DmartService:
 
     async def otp_request_login(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
         """Request an OTP intended for login flows."""
-        payload = {}
+        payload: Dict[str, str] = {}
         if msisdn:
             payload["msisdn"] = msisdn
         if email:
             payload["email"] = email
 
-        headers = self.json_headers
+        headers = {**self.json_headers}
         if accept_language:
             headers["Accept-Language"] = accept_language
 
@@ -394,7 +478,7 @@ class DmartService:
 
     async def password_reset_request(self, msisdn: Optional[str] = None, shortname: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
         """Request a password reset token via msisdn, shortname, or email."""
-        payload = {}
+        payload: Dict[str, str] = {}
         if msisdn:
             payload["msisdn"] = msisdn
         if shortname:
@@ -406,9 +490,7 @@ class DmartService:
 
     async def confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
         """Confirm an OTP code sent to msisdn or email."""
-        payload = {
-            "otp": otp
-        }
+        payload: Dict[str, str] = {"otp": otp}
         if msisdn:
             payload["msisdn"] = msisdn
         if email:
@@ -424,19 +506,18 @@ class DmartService:
         """Validate password strength/policy server-side."""
         return await self._request("POST", f"{self.base_url}/user/validate_password", json={"password": password}, headers=self.json_headers)
 
-    async def get_manifest(self) -> Dict[str, Any]:
+    async def get_manifest(self) -> ApiResponse:
         """Retrieve server manifest information.
 
         Returns:
-            Dict containing version, build info and other manifest details.
+            ApiResponse containing version, build info and other manifest details.
         """
         return await self._request("GET", f"{self.base_url}/info/manifest", headers=self.headers)
 
+    async def get_settings(self) -> ApiResponse:
+        """Retrieve dmart settings and configurations.
 
-async def get_settings(self) -> Dict[str, Any]:
-    """Retrieve dmart settings and configurations.
-
-    Returns:
-        Dict containing various dmart settings and configurations.
-    """
-    return await self._request("GET", f"{self.base_url}/info/settings", headers=self.headers)
+        Returns:
+            ApiResponse containing various dmart settings and configurations.
+        """
+        return await self._request("GET", f"{self.base_url}/info/settings", headers=self.headers)
