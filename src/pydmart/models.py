@@ -121,7 +121,7 @@ class ResponseEntry(MetaExtended):
     is_active: bool
     displayname: Optional[Translation] = None
     description: Optional[Translation] = None
-    tags: Set[str]
+    tags: Optional[Set[str]] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     owner_shortname: Optional[str] = None
