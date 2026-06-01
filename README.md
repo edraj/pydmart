@@ -75,6 +75,38 @@ query_request = QueryRequest(
 query = await service.query(query_request)
 ```
 
+* Query with a join (attach related entries from another subpath):
+```python
+from pydmart import JoinQuery, JoinType
+
+orders = QueryRequest(
+    type=QueryType.subpath,
+    space_name="shop",
+    subpath="orders",
+    search="",
+    retrieve_json_payload=True,
+    join=[
+        JoinQuery(
+            # left path is read from each order, right path from the joined records
+            join_on="payload.body.customer:shortname",
+            alias="customer",            # results land under record.attributes["join"]["customer"]
+            type=JoinType.left,          # left (default) | right | inner | outer
+            query=QueryRequest(          # the right side: which entries to join against
+                type=QueryType.subpath,
+                space_name="shop",
+                subpath="customers",
+                search="",
+                retrieve_json_payload=True,
+            ),
+        ),
+    ],
+)
+response = await service.query(orders)
+for record in response.records:
+    matched = record.attributes.get("join", {}).get("customer", [])
+    # `matched` is the list of joined customer records for this order
+```
+
 ## APIs
 
 * `login(shortname: str, password: str) -> ApiResponse`
