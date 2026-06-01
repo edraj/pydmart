@@ -8,17 +8,19 @@ import io
 import pytest
 import aiohttp
 from aioresponses import aioresponses
+from yarl import URL
 
 from pydmart.service import DmartService
 from pydmart.models import (
     ApiResponse,
     DmartException,
     QueryRequest,
+    JoinQuery,
     ActionRequest,
     ActionRequestRecord,
     ResponseEntry,
 )
-from pydmart.enums import QueryType, ResourceType, RequestType, ContentType
+from pydmart.enums import QueryType, JoinType, ResourceType, RequestType, ContentType
 
 from helpers import (
     BASE_URL,
@@ -311,6 +313,95 @@ class TestQuery:
                 q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
                 resp = await svc.query(q, scope="public")
                 assert resp.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_query_with_join_serializes_body(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/managed/query", payload=make_success_response())
+                sub = QueryRequest(
+                    type=QueryType.subpath, space_name="shop", subpath="customers",
+                    search="", retrieve_json_payload=True,
+                )
+                q = QueryRequest(
+                    type=QueryType.subpath, space_name="shop", subpath="orders",
+                    search="", retrieve_json_payload=True,
+                    join=[JoinQuery(
+                        join_on="payload.body.customer:shortname", alias="customer",
+                        query=sub, type=JoinType.left,
+                    )],
+                )
+                resp = await svc.query(q)
+                assert resp.status == "success"
+                # the serialized request body must actually carry the join
+                sent = m.requests[("POST", URL(f"{BASE_URL}/managed/query"))][0].kwargs["json"]
+                assert isinstance(sent["join"], list)
+                assert sent["join"][0]["join_on"] == "payload.body.customer:shortname"
+                assert sent["join"][0]["alias"] == "customer"
+                assert sent["join"][0]["type"] == "left"
+                assert sent["join"][0]["query"]["subpath"] == "customers"
+
+    @pytest.mark.asyncio
+    async def test_query_join_results_in_attributes(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                joined_record = {
+                    "resource_type": "content",
+                    "shortname": "order1",
+                    "subpath": "orders",
+                    "attributes": {
+                        "join": {
+                            "customer": [{
+                                "resource_type": "content",
+                                "shortname": "cust1",
+                                "subpath": "customers",
+                                "attributes": {},
+                            }],
+                        },
+                    },
+                }
+                m.post(
+                    f"{BASE_URL}/managed/query",
+                    payload=make_success_response(records=[joined_record]),
+                )
+                q = QueryRequest(type=QueryType.subpath, space_name="shop", subpath="orders", search="")
+                resp = await svc.query(q)
+                assert resp.status == "success"
+                rec = resp.records[0]
+                assert "join" in rec.attributes
+                assert rec.attributes["join"]["customer"][0]["shortname"] == "cust1"
+
+    @pytest.mark.asyncio
+    async def test_query_right_join_origin_passthrough(self):
+        # right/outer joins append unmatched right records carrying
+        # attributes["join"]["_join_origin"] == "right". The client does not
+        # model this specially; it must pass through intact (attributes is
+        # Dict[str, Any] + extra="allow"). Covers a response variant a server
+        # supporting right/outer joins emits.
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                appended_right = {
+                    "resource_type": "content",
+                    "shortname": "cust_unmatched",
+                    "subpath": "customers",
+                    "attributes": {"join": {"customer": [], "_join_origin": "right"}},
+                }
+                m.post(
+                    f"{BASE_URL}/managed/query",
+                    payload=make_success_response(records=[appended_right]),
+                )
+                q = QueryRequest(
+                    type=QueryType.subpath, space_name="shop", subpath="orders", search="",
+                    join=[JoinQuery(
+                        join_on="payload.body.customer:shortname", alias="customer",
+                        type=JoinType.right,
+                    )],
+                )
+                resp = await svc.query(q)
+                assert resp.status == "success"
+                rec = resp.records[0]
+                assert rec.attributes["join"]["_join_origin"] == "right"
+                assert rec.attributes["join"]["customer"] == []
 
     @pytest.mark.asyncio
     async def test_csv(self):

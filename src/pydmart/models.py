@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Set, Union
 from pydantic import BaseModel, ConfigDict, Field
 
-from .enums import ContentType, ResourceType, QueryType, SortType, Status, RequestType
+from .enums import ContentType, ResourceType, QueryType, JoinType, SortType, Status, RequestType
 
 
 class Error(BaseModel):
@@ -71,6 +71,29 @@ class AggregationType(BaseModel):
     reducers: Union[List[AggregationReducer], List[str]]
 
 
+class JoinQuery(BaseModel):
+    """A client-side join applied by the server after the base query runs.
+
+    Mirrors dmart's ``models/api.py::JoinQuery``. Matched right-side records are
+    attached under each base record's ``attributes["join"][alias]``.
+    """
+
+    join_on: str
+    """Comma-separated ``left:right`` path pairs (e.g. ``payload.body.customer:shortname``).
+    The left path is read from the base record, the right path from the sub-query records.
+    A trailing ``[]`` on either side is an array hint."""
+    alias: str
+    """Key under ``attributes["join"][alias]`` where matched right records land."""
+    query: Optional["QueryRequest"] = None
+    """The right-side sub-query. The server forces its ``limit`` to 1000 and strips
+    its own ``join``/``jq_filter``."""
+    type: Optional[JoinType] = None
+    """Join kind. ``None``/absent is treated as ``left`` by the server. For
+    ``right``/``outer`` joins the server appends unmatched right records, each
+    carrying ``attributes["join"]["_join_origin"] == "right"``; the client passes
+    this through untouched (no model change needed)."""
+
+
 class QueryRequest(BaseModel):
     type: QueryType
     space_name: str
@@ -91,6 +114,11 @@ class QueryRequest(BaseModel):
     limit: Optional[int] = 10
     offset: Optional[int] = 0
     aggregation_data: Optional[AggregationType] = None
+    join: Optional[List[JoinQuery]] = None
+
+
+# Resolve the forward reference in JoinQuery.query (mutual recursion with QueryRequest).
+JoinQuery.model_rebuild()
 
 
 class Payload(BaseModel):

@@ -34,6 +34,13 @@ class QueryType(StrEnum):
     attachments_aggregation = "attachments_aggregation"
 
 
+class JoinType(StrEnum):
+    left = "left"
+    right = "right"
+    inner = "inner"
+    outer = "outer"
+
+
 class SortType(StrEnum):
     ascending = "ascending"
     descending = "descending"
