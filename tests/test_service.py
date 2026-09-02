@@ -20,7 +20,7 @@ from pydmart.models import (
     ActionRequestRecord,
     ResponseEntry,
 )
-from pydmart.enums import QueryType, JoinType, ResourceType, RequestType, ContentType
+from pydmart.enums import QueryType, JoinType, ResourceType, RequestType, ContentType, OtpPurpose
 
 from helpers import (
     BASE_URL,
@@ -743,7 +743,7 @@ class TestOtp:
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
-                resp = await svc.otp_request(msisdn="+123456789")
+                resp = await svc.otp_request(OtpPurpose.register, msisdn="+123456789")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
@@ -751,7 +751,7 @@ class TestOtp:
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
-                resp = await svc.otp_request(email="a@b.com")
+                resp = await svc.otp_request(OtpPurpose.register, email="a@b.com")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
@@ -759,30 +759,38 @@ class TestOtp:
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
-                resp = await svc.otp_request(email="a@b.com", accept_language="ar")
+                resp = await svc.otp_request(OtpPurpose.register, email="a@b.com", accept_language="ar")
+                assert resp.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_otp_request_verify_contact(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
+                resp = await svc.otp_request(OtpPurpose.verify_contact, email="a@b.com")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
     async def test_otp_request_login(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/otp-request-login", payload=make_success_response())
-                resp = await svc.otp_request_login(msisdn="+123")
+                m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
+                resp = await svc.otp_request(OtpPurpose.login, msisdn="+123")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
     async def test_otp_request_login_with_language(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/otp-request-login", payload=make_success_response())
-                resp = await svc.otp_request_login(email="x@y.com", accept_language="en")
+                m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
+                resp = await svc.otp_request(OtpPurpose.login, email="x@y.com", accept_language="en")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
     async def test_confirm_otp(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/otp-confirm", payload=make_success_response())
+                m.post(f"{BASE_URL}/user/verify-contact", payload=make_success_response())
                 resp = await svc.confirm_otp("123456", msisdn="+123")
                 assert resp.status == "success"
 
@@ -790,7 +798,7 @@ class TestOtp:
     async def test_confirm_otp_email(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/otp-confirm", payload=make_success_response())
+                m.post(f"{BASE_URL}/user/verify-contact", payload=make_success_response())
                 resp = await svc.confirm_otp("654321", email="a@b.com")
                 assert resp.status == "success"
 
@@ -798,24 +806,24 @@ class TestOtp:
     async def test_password_reset_request(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/password-reset-request", payload=make_success_response())
-                resp = await svc.password_reset_request(email="a@b.com")
+                m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
+                resp = await svc.otp_request(OtpPurpose.reset, email="a@b.com")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
     async def test_password_reset_request_msisdn(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/password-reset-request", payload=make_success_response())
-                resp = await svc.password_reset_request(msisdn="+111")
+                m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
+                resp = await svc.otp_request(OtpPurpose.reset, msisdn="+111")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
     async def test_password_reset_request_shortname(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/password-reset-request", payload=make_success_response())
-                resp = await svc.password_reset_request(shortname="user1")
+                m.post(f"{BASE_URL}/user/otp-request", payload=make_success_response())
+                resp = await svc.otp_request(OtpPurpose.reset, shortname="user1")
                 assert resp.status == "success"
 
 

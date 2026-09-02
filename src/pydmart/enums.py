@@ -20,6 +20,13 @@ class UserType(StrEnum):
     bot = "bot"
 
 
+class OtpPurpose(StrEnum):
+    login = "login"
+    reset = "reset"
+    register = "register"
+    verify_contact = "verify-contact"
+
+
 class QueryType(StrEnum):
     aggregation = "aggregation"
     search = "search"
