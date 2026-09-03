@@ -5,7 +5,7 @@ from .models import (
     ApiResponse, ResponseEntry, QueryRequest, ActionRequest,
     DmartException, Error
 )
-from .enums import QueryType, ResourceType, ContentType
+from .enums import QueryType, ResourceType, ContentType, OtpPurpose
 
 
 class DmartService:
@@ -193,6 +193,11 @@ class DmartService:
 
     async def update_user(self, request: Dict[str, Any]) -> ApiResponse:
         """Update current user profile attributes.
+
+        Note: this endpoint no longer accepts contact-change fields (email,
+        new_email, email_otp, msisdn, new_msisdn, msisdn_otp) and will error
+        if they are present. Use otp_request(purpose=OtpPurpose.verify_contact)
+        followed by confirm_otp() to confirm a new email or msisdn.
 
         Args:
             request: Payload for the update endpoint.
@@ -448,13 +453,24 @@ class DmartService:
 
         return await self._request("POST", url, json=record, headers=self.json_headers)
 
-    async def otp_request(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
-        """Request an OTP for signup/verification via msisdn or email."""
-        payload: Dict[str, str] = {}
+    async def otp_request(self, purpose: OtpPurpose, msisdn: Optional[str] = None, email: Optional[str] = None, shortname: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
+        """Request an OTP via msisdn, email, or shortname for the given purpose.
+
+        Args:
+            purpose: Why the OTP is requested (login, reset, register, or
+                verify_contact). Required by the server.
+            msisdn: Destination phone number, if using msisdn.
+            email: Destination email, if using email.
+            shortname: Target user's shortname, if using shortname (e.g. reset).
+            accept_language: Optional Accept-Language header override.
+        """
+        payload: Dict[str, str] = {"purpose": purpose}
         if msisdn:
             payload["msisdn"] = msisdn
         if email:
             payload["email"] = email
+        if shortname:
+            payload["shortname"] = shortname
 
         headers = {**self.json_headers}
         if accept_language:
@@ -462,41 +478,19 @@ class DmartService:
 
         return await self._request("POST", f"{self.base_url}/user/otp-request", json=payload, headers=headers)
 
-    async def otp_request_login(self, msisdn: Optional[str] = None, email: Optional[str] = None, accept_language: Optional[str] = None) -> ApiResponse:
-        """Request an OTP intended for login flows."""
-        payload: Dict[str, str] = {}
-        if msisdn:
-            payload["msisdn"] = msisdn
-        if email:
-            payload["email"] = email
-
-        headers = {**self.json_headers}
-        if accept_language:
-            headers["Accept-Language"] = accept_language
-
-        return await self._request("POST", f"{self.base_url}/user/otp-request-login", json=payload, headers=headers)
-
-    async def password_reset_request(self, msisdn: Optional[str] = None, shortname: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
-        """Request a password reset token via msisdn, shortname, or email."""
-        payload: Dict[str, str] = {}
-        if msisdn:
-            payload["msisdn"] = msisdn
-        if shortname:
-            payload["shortname"] = shortname
-        if email:
-            payload["email"] = email
-
-        return await self._request("POST", f"{self.base_url}/user/password-reset-request", json=payload, headers=self.json_headers)
-
     async def confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
-        """Confirm an OTP code sent to msisdn or email."""
-        payload: Dict[str, str] = {"otp": otp}
+        """Verify a contact's OTP code sent to msisdn or email.
+
+        Call otp_request(purpose=OtpPurpose.verify_contact, ...) first to
+        trigger the code, then pass it here to confirm.
+        """
+        payload: Dict[str, str] = {"code": otp}
         if msisdn:
             payload["msisdn"] = msisdn
         if email:
             payload["email"] = email
 
-        return await self._request("POST", f"{self.base_url}/user/otp-confirm", json=payload, headers=self.json_headers)
+        return await self._request("POST", f"{self.base_url}/user/verify-contact", json=payload, headers=self.json_headers)
 
     async def user_reset(self, shortname: str) -> ApiResponse:
         """Force-reset user status (admin action)."""
