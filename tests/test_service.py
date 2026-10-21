@@ -291,6 +291,66 @@ class TestGetProfile:
                 assert svc.current_user_roles == []
                 assert svc.current_user_permissions == []
 
+    @pytest.mark.asyncio
+    async def test_keeps_cached_permissions_when_profile_has_none(self):
+        profile = make_profile_response(roles=["editor"])
+        del profile["records"][0]["attributes"]["permissions"]
+        async with DmartService(BASE_URL) as svc:
+            svc.current_user_permissions = PERMISSIONS
+            with aioresponses() as m:
+                m.get(f"{BASE_URL}/user/profile", payload=profile)
+                await svc.get_profile()
+                assert svc.current_user_permissions == PERMISSIONS
+                assert svc.current_user_roles == ["editor"]
+
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+PERMISSIONS = {"demo:content:content": {"allowed_actions": ["view"]}}
+# What a dmart without GET /user/permissions sends: the unmatched-route rewrite.
+INVALID_ROUTE = make_failed_response(code=230, message="Route not found: GET /user/permissions")
+
+
+class TestGetPermissions:
+    @pytest.mark.asyncio
+    async def test_reads_the_permissions_route(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.get(f"{BASE_URL}/user/permissions", payload={
+                    "status": "success", "attributes": {"permissions": PERMISSIONS},
+                })
+                assert await svc.get_permissions() == PERMISSIONS
+                assert svc.current_user_permissions == PERMISSIONS
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [422, 404])
+    async def test_older_server_is_answered_from_the_profile(self, status):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.get(f"{BASE_URL}/user/permissions", status=status, payload=INVALID_ROUTE)
+                m.get(f"{BASE_URL}/user/profile", payload=make_profile_response(permissions=PERMISSIONS))
+                assert await svc.get_permissions() == PERMISSIONS
+                assert svc.current_user_permissions == PERMISSIONS
+
+    @pytest.mark.asyncio
+    async def test_bare_404_is_answered_from_the_profile(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.get(f"{BASE_URL}/user/permissions", status=404, body="Not Found", content_type="text/plain")
+                m.get(f"{BASE_URL}/user/profile", payload=make_profile_response(permissions=PERMISSIONS))
+                assert await svc.get_permissions() == PERMISSIONS
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status,code", [(401, 49), (422, 400)])
+    async def test_other_failures_raise(self, status, code):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.get(f"{BASE_URL}/user/permissions", status=status, payload=make_failed_response(code=code))
+                with pytest.raises(DmartException):
+                    await svc.get_permissions()
+                assert svc.current_user_permissions == []
+
 
 # ---------------------------------------------------------------------------
 # Query / CSV / Spaces / Children
