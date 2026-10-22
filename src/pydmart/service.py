@@ -8,6 +8,10 @@ from .models import (
 from .enums import QueryType, ResourceType, ContentType, OtpPurpose
 
 
+# dmart's error code for a route the server does not have.
+INVALID_ROUTE = 230
+
+
 class DmartService:
     """High-level async client for the Dmart HTTP API.
 
@@ -26,7 +30,8 @@ class DmartService:
         base_url: Base endpoint of the Dmart service, e.g. https://api.example.com
         auth_token: Bearer token assigned upon successful login.
         current_user_roles: Cached roles from the user profile, if fetched.
-        current_user_permissions: Cached permissions from the user profile, if fetched.
+        current_user_permissions: Cached permission map, from get_permissions()
+            or the user profile, if fetched.
     """
 
     def __init__(self, base_url: str):
@@ -209,12 +214,41 @@ class DmartService:
         return await self._request("GET", f"{self.base_url}/user/check-existing?{prop}={value}", headers=self.headers)
 
     async def get_profile(self) -> ApiResponse:
-        """Fetch current user profile and cache permissions/roles on success."""
+        """Fetch current user profile and cache permissions/roles on success.
+
+        dmart deprecates the profile's permission map in favour of
+        GET /user/permissions (get_permissions()). Once a server leaves it
+        out, the cached map is kept rather than cleared.
+        """
         data = await self._request("GET", f"{self.base_url}/user/profile", headers=self.headers)
         if data.status == "success" and data.records:
-            self.current_user_permissions = data.records[0].attributes.get("permissions", [])
-            self.current_user_roles = data.records[0].attributes.get("roles", [])
+            attributes = data.records[0].attributes
+            if "permissions" in attributes:
+                self.current_user_permissions = attributes["permissions"]
+            self.current_user_roles = attributes.get("roles", [])
         return data
+
+    async def get_permissions(self) -> Dict[str, Any]:
+        """Fetch the caller's permission map and cache it.
+
+        Reads GET /user/permissions, keyed "space:subpath:resource_type".
+        A server without that route answers INVALID_ROUTE (230, with HTTP
+        422) and is answered from the profile, which carried the map until
+        then.
+
+        Raises:
+            DmartException: On any other failure.
+        """
+        try:
+            data = await self._request("GET", f"{self.base_url}/user/permissions", headers=self.headers)
+            permissions = (getattr(data, "attributes", None) or {}).get("permissions")
+        except DmartException as e:
+            if e.error.code != INVALID_ROUTE and e.status_code != 404:
+                raise
+            profile = await self.get_profile()
+            permissions = profile.records[0].attributes.get("permissions") if profile.records else None
+        self.current_user_permissions = permissions or {}
+        return self.current_user_permissions
 
     async def query(self, query: QueryRequest, scope: str = "managed") -> ApiResponse:
         """Run a query within a scope.

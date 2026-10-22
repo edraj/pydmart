@@ -145,7 +145,10 @@ Performs a user reset action for the specified shortname.
 Validates the provided password against the Dmart password policy.
 
 * `get_profile() -> ProfileResponse`
-Gets the profile of the current user.
+Gets the profile of the current user. Its permission map is deprecated by dmart in favour of `get_permissions()`.
+
+* `get_permissions() -> Dict[str, Any]`
+Gets the current user's permission map from `GET /user/permissions`, keyed `"space:subpath:resource_type"`, and caches it in `current_user_permissions`. A server without that route is answered from the profile.
 
 * `query(query: QueryRequest, scope: str = "managed") -> ApiResponse`
 Performs a query action with the provided query request and scope.
