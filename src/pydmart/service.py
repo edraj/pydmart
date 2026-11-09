@@ -1,15 +1,16 @@
 import json
+import warnings
 import aiohttp
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union, overload
 from .models import (
     ApiResponse, ResponseEntry, QueryRequest, ActionRequest,
     DmartException, Error
 )
-from .enums import QueryType, ResourceType, ContentType, OtpPurpose
+from .enums import QueryType, ResourceType, ContentType, OtpPurpose, DmartErrorCode
 
 
 # dmart's error code for a route the server does not have.
-INVALID_ROUTE = 230
+INVALID_ROUTE = int(DmartErrorCode.INVALID_ROUTE)
 
 
 class DmartService:
@@ -32,18 +33,23 @@ class DmartService:
         current_user_roles: Cached roles from the user profile, if fetched.
         current_user_permissions: Cached permission map, from get_permissions()
             or the user profile, if fetched.
+        device_id: Optional device identifier sent as the ``X-DeviceId`` header
+            on sign-in. dmart (>= 1.7.2) requires a device id for mobile
+            accounts; a ``device_id`` passed to ``login`` wins over it.
     """
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, device_id: Optional[str] = None):
         """Initialize the service.
 
         Args:
             base_url: Base URL of the Dmart API (without trailing slash).
+            device_id: Optional device identifier for sign-in (``X-DeviceId``).
         """
         self.base_url: str = base_url
+        self.device_id: Optional[str] = device_id
         self.auth_token: str = ""
         self.current_user_roles: List[str] = []
-        self.current_user_permissions: List[Any] = []
+        self.current_user_permissions: Dict[str, Any] = {}
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def __aenter__(self) -> "DmartService":
@@ -134,23 +140,62 @@ class DmartService:
         except aiohttp.ClientError as e:
             raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
-    async def login(self, shortname: str, password: str) -> ApiResponse:
-        """Login with shortname and password; stores auth token on success.
+    @property
+    def _login_headers(self) -> Dict[str, str]:
+        """JSON headers for /user/login, with ``X-DeviceId`` when a client device id is set."""
+        headers = {"Content-Type": "application/json"}
+        if self.device_id:
+            headers["X-DeviceId"] = self.device_id
+        return headers
+
+    async def login(
+        self,
+        shortname: str,
+        password: Optional[str],
+        otp: Optional[str] = None,
+        device_id: Optional[str] = None,
+    ) -> ApiResponse:
+        """Login with shortname and password (and/or code); stores auth token on success.
+
+        Sign-in can take two steps. When dmart answers ``OTP_NEEDED`` (115) it
+        has sent a code: an admin always, and (dmart >= 1.7.2) any account
+        signing in from a device it hasn't seen. Call ``login`` again with the
+        same shortname, password and ``device_id`` plus the ``otp``. A code
+        login (from ``otp_request(OtpPurpose.login, ...)``) passes
+        ``password=None`` and the ``otp``.
+
+        Mobile accounts must send a device id (here, or ``device_id`` on the
+        service, which goes out as ``X-DeviceId``); without one dmart answers
+        ``INVALID_DATA`` (402) or 115.
 
         Args:
             shortname: User shortname.
-            password: User password.
+            password: User password, or None for a code login.
+            otp: Code from the second step or a code login.
+            device_id: Device identifier; overrides the service's ``device_id``.
 
         Returns:
             ApiResponse containing the login record with access_token.
 
         Raises:
-            DmartException: On invalid credentials or malformed response.
+            DmartException: On failure. Check ``error.code`` against
+                ``DmartErrorCode``: ``OTP_NEEDED`` (115) means send the
+                code, ``USER_ISNT_VERIFIED`` (11) means that address isn't
+                verified (offer a code login or reset), ``USER_ACCOUNT_LOCKED``
+                (110) a lockout or a device-locked account.
         """
+        body: Dict[str, Any] = {"shortname": shortname}
+        if password is not None:
+            body["password"] = password
+        if otp is not None:
+            body["otp"] = otp
+        if device_id is not None:
+            body["device_id"] = device_id
         data = await self._request(
             "POST",
             f"{self.base_url}/user/login",
-            json={"shortname": shortname, "password": password},
+            json=body,
+            headers=self._login_headers,
         )
         if not data.records or len(data.records) == 0:
             raise DmartException(
@@ -165,8 +210,13 @@ class DmartService:
     async def login_by(self, credentials: Dict[str, Any], password: str) -> ApiResponse:
         """Login with arbitrary credentials dict plus password; stores auth token.
 
+        ``credentials`` may also carry ``otp`` and ``device_id`` for the
+        two-step sign-in described on ``login``. The service's ``device_id``
+        goes out as ``X-DeviceId``; a ``device_id`` in ``credentials`` wins.
+
         Args:
-            credentials: Dict with authentication fields (e.g. email, msisdn).
+            credentials: Dict with authentication fields (e.g. email, msisdn,
+                otp, device_id).
             password: User password.
 
         Returns:
@@ -179,6 +229,7 @@ class DmartService:
             "POST",
             f"{self.base_url}/user/login",
             json={**credentials, "password": password},
+            headers=self._login_headers,
         )
         if data.records:
             self.auth_token = data.records[0].attributes.get("access_token", "")
@@ -188,13 +239,27 @@ class DmartService:
         """Invalidate current token server-side (if any)."""
         return await self._request("POST", f"{self.base_url}/user/logout", headers=self.headers)
 
-    async def create_user(self, request: Dict[str, Any]) -> ApiResponse:
-        """Create a new user.
+    async def create_user(self, request: Dict[str, Any], shortname: Optional[str] = None) -> ApiResponse:
+        """Register a new user (POST /user/create).
+
+        The body is ``{"shortname"?: ..., "attributes": {...}}``. Attributes
+        carry ``email`` and/or ``msisdn``, ``password``, ``displayname`` and so
+        on, plus ``email_otp`` / ``msisdn_otp``: codes from
+        ``otp_request(OtpPurpose.register, ...)``. Open registration always
+        needs those codes on dmart >= 1.7.10. dmart answers ``OTP_INVALID``
+        (307) or ``OTP_EXPIRED`` (308) for a bad code.
 
         Args:
-            request: Payload for the user creation endpoint.
+            request: The request body, usually ``{"attributes": {...}}``.
+            shortname: Optional username to register under (dmart >= 1.7.9):
+                a free name that passes the server's username rule, or
+                ``"auto"`` to let the server pick one. Overrides a
+                ``shortname`` already in ``request``.
         """
-        return await self._request("POST", f"{self.base_url}/user/create", json=request, headers=self.json_headers)
+        body = dict(request)
+        if shortname is not None:
+            body["shortname"] = shortname
+        return await self._request("POST", f"{self.base_url}/user/create", json=body, headers=self.json_headers)
 
     async def update_user(self, request: Dict[str, Any]) -> ApiResponse:
         """Update current user profile attributes.
@@ -203,6 +268,11 @@ class DmartService:
         new_email, email_otp, msisdn, new_msisdn, msisdn_otp) and will error
         if they are present. Use otp_request(purpose=OtpPurpose.verify_contact)
         followed by confirm_otp() to confirm a new email or msisdn.
+
+        Changing the password needs ``old_password`` alongside ``password``,
+        even under ``force_password_change`` (dmart >= 1.6.6). An account with
+        no password sets its first one through the reset flow
+        (``password_reset_confirm``).
 
         Args:
             request: Payload for the update endpoint.
@@ -224,7 +294,7 @@ class DmartService:
         if data.status == "success" and data.records:
             attributes = data.records[0].attributes
             if "permissions" in attributes:
-                self.current_user_permissions = attributes["permissions"]
+                self.current_user_permissions = attributes["permissions"] or {}
             self.current_user_roles = attributes.get("roles", [])
         return data
 
@@ -247,25 +317,78 @@ class DmartService:
                 raise
             profile = await self.get_profile()
             permissions = profile.records[0].attributes.get("permissions") if profile.records else None
-        self.current_user_permissions = permissions or {}
-        return self.current_user_permissions
+        result: Dict[str, Any] = permissions or {}
+        self.current_user_permissions = result
+        return result
+
+    @staticmethod
+    def _query_body(query: QueryRequest) -> Dict[str, Any]:
+        """Serialize a query, leaving out unset fields and the removed ``validate_schema``.
+
+        Omitting ``limit`` lets the server apply its ``DEFAULT_QUERY_LIMIT``.
+        """
+        return query.model_dump(mode="json", exclude_none=True, exclude={"validate_schema"})
 
     async def query(self, query: QueryRequest, scope: str = "managed") -> ApiResponse:
         """Run a query within a scope.
+
+        ``data.attributes`` carries ``total`` and ``returned``; when the server
+        capped the count, ``data.total_is_lower_bound`` is True.
 
         Args:
             query: QueryRequest payload.
             scope: API scope, e.g. 'managed' or 'public'.
         """
-        return await self._request("POST", f"{self.base_url}/{scope}/query", json=query.model_dump(), headers=self.json_headers)
+        return await self._request("POST", f"{self.base_url}/{scope}/query", json=self._query_body(query), headers=self.json_headers)
 
-    async def csv(self, query: QueryRequest) -> ApiResponse:
-        """Export a query as CSV data (server-side generation)."""
-        return await self._request("POST", f"{self.base_url}/managed/csv", json=query.model_dump(), headers=self.json_headers)
+    @overload
+    async def csv(self, query: QueryRequest, preview: Literal[False] = False) -> str: ...
 
-    async def space(self, action: ActionRequest) -> ApiResponse:
-        """Perform a space-level management action."""
-        return await self._request("POST", f"{self.base_url}/managed/space", json=action.model_dump(), headers=self.json_headers)
+    @overload
+    async def csv(self, query: QueryRequest, preview: Literal[True]) -> ApiResponse: ...
+
+    async def csv(self, query: QueryRequest, preview: bool = False) -> Union[str, ApiResponse]:
+        """Export a query as CSV (server-side generation).
+
+        dmart answers the file itself (``text/csv``), so this returns the CSV
+        text. A refusal still arrives as dmart's JSON error and raises
+        ``DmartException``.
+
+        Args:
+            query: The query to export.
+            preview: Ask for a preview instead (``?preview=1``, dmart >= 1.6.12).
+                The answer is then a JSON ``ApiResponse`` whose ``attributes``
+                carries ``exported``, ``total``, ``limit``, ``truncated``,
+                ``reason`` and ``message``.
+
+        Returns:
+            The CSV text, or with ``preview=True`` the preview ``ApiResponse``.
+        """
+        url = f"{self.base_url}/managed/csv"
+        body = self._query_body(query)
+        if preview:
+            return await self._request("POST", f"{url}?preview=1", json=body, headers=self.json_headers)
+        try:
+            session = await self._get_session()
+            async with session.post(url, json=body, headers=self.json_headers) as response:
+                failed = response.status >= 400
+                if failed or "json" in (response.content_type or ""):
+                    try:
+                        data = await response.json(content_type=None)
+                    except ValueError:
+                        data = None
+                    if isinstance(data, dict) and data.get("status") == "failed" and isinstance(data.get("error"), dict):
+                        raise DmartException(status_code=response.status if failed else 400, error=Error(**data["error"]))
+                    if failed:
+                        raise DmartException(
+                            status_code=response.status,
+                            error=Error(type="request", code=response.status, message=(await response.text())[:500], info=[]),
+                        )
+                return await response.text()
+        except DmartException:
+            raise
+        except aiohttp.ClientError as e:
+            raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
 
     async def request(self, action: ActionRequest) -> ApiResponse:
         """Perform a generic managed request (create/update/etc.)."""
@@ -279,7 +402,7 @@ class DmartService:
         shortname: str,
         retrieve_json_payload: bool = False,
         retrieve_attachments: bool = False,
-        validate_schema: bool = True,
+        validate_schema: Optional[bool] = None,
         scope: str = "managed"
     ) -> ResponseEntry:
         """Retrieve a single entry with optional payload/attachments.
@@ -291,7 +414,8 @@ class DmartService:
             shortname: Unique shortname of the entry.
             retrieve_json_payload: Whether to include JSON payload.
             retrieve_attachments: Whether to include attachments.
-            validate_schema: Validate payload against its schema on server.
+            validate_schema: Deprecated and never sent: dmart's entry route
+                ignores it, so it never validated anything.
             scope: API scope.
 
         Returns:
@@ -302,8 +426,13 @@ class DmartService:
             f"/{subpath}/{shortname}"
             f"?retrieve_json_payload={retrieve_json_payload}"
             f"&retrieve_attachments={retrieve_attachments}"
-            f"&validate_schema={validate_schema}"
         )
+        if validate_schema is not None:
+            warnings.warn(
+                "retrieve_entry(validate_schema=...) is deprecated: dmart ignores it and it is no longer sent.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         try:
             session = await self._get_session()
             async with session.request("GET", url, headers=self.headers) as response:
@@ -348,29 +477,6 @@ class DmartService:
 
         return await self._request("POST", f"{self.base_url}/{scope}/resource_with_payload", data=form_data, headers=self.headers)
 
-    async def fetch_data_asset(
-        self,
-        resource_type: str,
-        data_asset_type: str,
-        space_name: str,
-        subpath: str,
-        shortname: str,
-        query_string: str = "SELECT * FROM file",
-        filter_data_assets: Optional[List[str]] = None,
-        branch_name: Optional[str] = None
-    ) -> ApiResponse:
-        """Execute a query against a data asset (CSV/Parquet/JSONL/etc.)."""
-        return await self._request("POST", f"{self.base_url}/managed/data-asset", json={
-            "space_name": space_name,
-            "resource_type": resource_type,
-            "data_asset_type": data_asset_type,
-            "subpath": subpath,
-            "shortname": shortname,
-            "query_string": query_string,
-            "filter_data_assets": filter_data_assets,
-            "branch_name": branch_name,
-        }, headers=self.json_headers)
-
     async def get_spaces(self) -> ApiResponse:
         """List management spaces (up to limit)."""
         return await self.query(QueryRequest(
@@ -414,9 +520,16 @@ class DmartService:
         """Build a direct URL to download an attachment payload."""
         return f"{self.base_url}/{scope}/payload/{resource_type}/{space_name}/{subpath}/{parent_shortname}/{shortname}{ext or ''}"
 
-    async def get_space_health(self, space_name: str) -> ApiResponse:
-        """Get health information for a space."""
-        return await self._request("GET", f"{self.base_url}/managed/health/{space_name}", headers=self.headers)
+    async def get_space_health(self, space_name: str, health_type: str = "soft") -> ApiResponse:
+        """Get health information for a space.
+
+        Global admins only (dmart >= 1.5.19); others get a refusal.
+
+        Args:
+            space_name: Space to check.
+            health_type: ``"soft"``, ``"hard"`` or ``"all"``.
+        """
+        return await self._request("GET", f"{self.base_url}/managed/health/{health_type}/{space_name}", headers=self.headers)
 
     async def get_payload(
         self,
@@ -512,23 +625,78 @@ class DmartService:
 
         return await self._request("POST", f"{self.base_url}/user/otp-request", json=payload, headers=headers)
 
-    async def confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None) -> ApiResponse:
-        """Verify a contact's OTP code sent to msisdn or email.
+    async def confirm_otp(
+        self,
+        otp: str,
+        msisdn: Optional[str] = None,
+        email: Optional[str] = None,
+        password: Optional[str] = None,
+        current_code: Optional[str] = None,
+    ) -> ApiResponse:
+        """Verify a contact's OTP code sent to msisdn or email (POST /user/verify-contact).
 
         Call otp_request(purpose=OtpPurpose.verify_contact, ...) first to
         trigger the code, then pass it here to confirm.
+
+        Confirming the address already on the account needs nothing else.
+        Changing it (dmart >= 1.6.7) needs ``password`` on an account that has
+        one (admins always), or ``current_code`` on a passwordless account: a
+        verify-contact code sent to its existing phone, else its email.
+
+        Args:
+            otp: The code sent to the new address.
+            msisdn: The phone being confirmed.
+            email: The email being confirmed.
+            password: The account's password, to change an address.
+            current_code: A code sent to the existing address, for a
+                passwordless account changing its address.
         """
         payload: Dict[str, str] = {"code": otp}
         if msisdn:
             payload["msisdn"] = msisdn
         if email:
             payload["email"] = email
+        if password is not None:
+            payload["password"] = password
+        if current_code is not None:
+            payload["current_code"] = current_code
 
         return await self._request("POST", f"{self.base_url}/user/verify-contact", json=payload, headers=self.json_headers)
 
-    async def user_reset(self, shortname: str) -> ApiResponse:
-        """Force-reset user status (admin action)."""
-        return await self._request("POST", f"{self.base_url}/user/reset", json={"shortname": shortname}, headers=self.json_headers)
+    async def password_reset_confirm(
+        self,
+        otp: str,
+        password: str,
+        shortname: Optional[str] = None,
+        email: Optional[str] = None,
+        msisdn: Optional[str] = None,
+    ) -> ApiResponse:
+        """Set a new password with a reset code (POST /user/password-reset-confirm).
+
+        Get the code with ``otp_request(OtpPurpose.reset, ...)`` and name the
+        account with exactly one of ``shortname``, ``email`` or ``msisdn``
+        (a server may refuse ``shortname``; then use email or msisdn). An
+        admin can reset only while ``force_password_change`` is set.
+
+        Args:
+            otp: The reset code.
+            password: The new password.
+            shortname: The account's shortname.
+            email: The account's email.
+            msisdn: The account's phone.
+
+        Raises:
+            DmartException: ``OTP_INVALID`` (307), ``OTP_EXPIRED`` (308),
+                ``MISSING_DATA`` (202) or ``PASSWORD_RESET_ERROR`` (102).
+        """
+        body: Dict[str, str] = {"otp": otp, "password": password}
+        if shortname:
+            body["shortname"] = shortname
+        if email:
+            body["email"] = email
+        if msisdn:
+            body["msisdn"] = msisdn
+        return await self._request("POST", f"{self.base_url}/user/password-reset-confirm", json=body, headers=self.json_headers)
 
     async def validate_password(self, password: str) -> ApiResponse:
         """Validate password strength/policy server-side."""
@@ -541,6 +709,18 @@ class DmartService:
             ApiResponse containing version, build info and other manifest details.
         """
         return await self._request("GET", f"{self.base_url}/info/manifest", headers=self.headers)
+
+    async def get_client_config(self) -> ApiResponse:
+        """Read the server's client configuration (GET /public/client-config, dmart >= 1.6.12).
+
+        Needs no sign-in. ``data.attributes`` carries ``backend_timeout``,
+        ``otp_length``, ``otp_resend_after``, ``otp_token_ttl``,
+        ``max_upload_size_mb``, ``default_query_limit``, ``max_query_limit``,
+        ``ui_list_limit``, ``password_rule_custom``, ``password_hint`` (when
+        set), and on dmart >= 1.7.9 ``username_rule_custom`` and
+        ``username_hint`` (when set).
+        """
+        return await self._request("GET", f"{self.base_url}/public/client-config")
 
     async def get_settings(self) -> ApiResponse:
         """Retrieve dmart settings and configurations.

@@ -25,6 +25,23 @@ service = DmartService("http://localhost:8282")
 login = await service.login("dmart", "Test1234")
 ```
 
+* Sign in with a device id and the second step. Mobile accounts must name a device
+  (dmart >= 1.7.2), and an admin or a new device gets `OTP_NEEDED` (115) and a code:
+```python
+from pydmart import DmartException, DmartErrorCode
+
+service = DmartService("http://localhost:8282", device_id="phone-1")  # sent as X-DeviceId
+try:
+    await service.login("dmart", "Test1234")
+except DmartException as e:
+    if e.error.code == DmartErrorCode.OTP_NEEDED:
+        await service.login("dmart", "Test1234", otp=input("code: "))
+    elif e.error.code == DmartErrorCode.USER_ISNT_VERIFIED:
+        ...  # the address isn't verified: offer a code login or a password reset
+    else:
+        raise
+```
+
 * Fetch the profile of the current user:
 ```
 me = await service.get_profile()
@@ -45,7 +62,7 @@ action_request = ActionRequest(
     request_type=RequestType.create,
     records=[action_request_record]
 )
-space = await service.space(action_request)
+space = await service.request(action_request)
 ```
 
 * Remove a space:
@@ -61,7 +78,7 @@ action_request = ActionRequest(
     request_type=RequestType.delete,
     records=[action_request_record]
 )
-space = await service.space(action_request)
+space = await service.request(action_request)
 ```
 
 * Query the spaces:
@@ -109,22 +126,31 @@ for record in response.records:
 
 ## APIs
 
-* `login(shortname: str, password: str) -> ApiResponse`
-Performs a login action using the provided shortname and password.
+* `DmartService(base_url: str, device_id: Optional[str] = None)`
+Creates the client. `device_id`, when set, is sent as the `X-DeviceId` header on sign-in.
+
+* `login(shortname: str, password: Optional[str], otp: Optional[str] = None, device_id: Optional[str] = None) -> ApiResponse`
+Performs a login with the shortname and password. When dmart answers `OTP_NEEDED` (115), call it
+again with the same password and `device_id` plus the `otp`. Pass `password=None` and `otp` for a
+code login. `USER_ISNT_VERIFIED` (11) means the address isn't verified yet.
 
 * `login_by(credentials: dict, password: str) -> ApiResponse`
-Performs a login action using custom credentials and password.
+Performs a login action using custom credentials (`email`, `msisdn`, and optionally `otp`,
+`device_id`) and password.
 
 * `logout() -> ApiResponse`
 Performs a logout action.
 
-* `create_user(request: dict) -> ActionResponse`
-Creates a new user with the provided request data.
+* `create_user(request: dict, shortname: Optional[str] = None) -> ActionResponse`
+Registers a user via `/user/create` with `{"attributes": {...}}`. Open registration needs
+`email_otp` / `msisdn_otp` codes from `otp_request(OtpPurpose.register, ...)` (dmart >= 1.7.10).
+`shortname` is the chosen username, or `"auto"` (dmart >= 1.7.9).
 
 * `update_user(request: dict) -> ActionResponse`
 Updates an existing user with the provided request data. No longer accepts contact-change
 fields (`email`, `new_email`, `email_otp`, `msisdn`, `new_msisdn`, `msisdn_otp`) — use
-`otp_request` with `purpose="verify-contact"` followed by `confirm_otp` instead.
+`otp_request` with `purpose="verify-contact"` followed by `confirm_otp` instead. Changing the
+password needs `old_password`.
 
 * `check_existing(prop: str, value: str) -> ResponseEntry`
 Checks if a user exists based on the provided property and value.
@@ -135,11 +161,18 @@ required and must be one of `login`, `reset`, `register`, `verify-contact` (see 
 Use `purpose="login"` in place of the old `otp_request_login`, and `purpose="reset"` in place of
 the old `password_reset_request`.
 
-* `confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None)`
-Verifies a contact's OTP code (sent via `otp_request`) using the given MSISDN or email.
+* `confirm_otp(self, otp: str, msisdn: Optional[str] = None, email: Optional[str] = None, password: Optional[str] = None, current_code: Optional[str] = None)`
+Verifies a contact's OTP code (sent via `otp_request`) using the given MSISDN or email. Changing
+an address needs `password`, or `current_code` (a code sent to the existing address) on an account
+without a password.
 
-* `user_reset(self, shortname: str)`
-Performs a user reset action for the specified shortname.
+* `password_reset_confirm(self, otp: str, password: str, shortname: Optional[str] = None, email: Optional[str] = None, msisdn: Optional[str] = None)`
+Sets a new password with a code from `otp_request(OtpPurpose.reset, ...)`. Name the account with
+exactly one of `shortname`, `email` or `msisdn`.
+
+* `get_client_config() -> ApiResponse`
+Reads `GET /public/client-config` (no sign-in): OTP length and timings, upload and query limits,
+and the password and username rules' hints, under `attributes`.
 
 * `validate_password(self, password: str)`
 Validates the provided password against the Dmart password policy.
@@ -151,25 +184,22 @@ Gets the profile of the current user. Its permission map is deprecated by dmart 
 Gets the current user's permission map from `GET /user/permissions`, keyed `"space:subpath:resource_type"`, and caches it in `current_user_permissions`. A server without that route is answered from the profile.
 
 * `query(query: QueryRequest, scope: str = "managed") -> ApiResponse`
-Performs a query action with the provided query request and scope.
+Performs a query action with the provided query request and scope. Leave `limit` unset to get the
+server's default page size. `response.total_is_lower_bound` is True when the server capped the count.
 
-* `csv(query: QueryRequest) -> ApiResponse`
-Queries the entries as a CSV file with the provided query request.
-
-* `space(action: ActionRequest) -> ActionResponse`
-Performs actions on spaces with the provided action request.
+* `csv(query: QueryRequest, preview: bool = False) -> str | ApiResponse`
+Exports the entries as CSV and returns the CSV text. `preview=True` returns an `ApiResponse`
+describing what the file would hold instead.
 
 * `request(action: ActionRequest) -> ActionResponse`
-Performs a request action with the provided action request.
+Performs a request action with the provided action request. Spaces are created and deleted
+here too, with `resource_type=ResourceType.space`.
 
-* `retrieve_entry(resource_type: ResourceType, space_name: str, subpath: str, shortname: str, retrieve_json_payload: bool = False, retrieve_attachments: bool = False, validate_schema: bool = True, scope: str = "managed") -> ResponseEntry`
+* `retrieve_entry(resource_type: ResourceType, space_name: str, subpath: str, shortname: str, retrieve_json_payload: bool = False, retrieve_attachments: bool = False, scope: str = "managed") -> ResponseEntry`
 Retrieves an entry based on the provided parameters.
 
 * `upload_with_payload(space_name: str, subpath: str, shortname: str, resource_type: ResourceType, payload_file: Any, content_type: Optional[ContentType] = None, schema_shortname: Optional[str] = None) -> ApiResponse`
 Uploads a file with payload to the specified space.
-
-* `fetch_data_asset(resource_type: str, data_asset_type: str, space_name: str, subpath: str, shortname: str, query_string: str = "SELECT * FROM file", filter_data_assets: Optional[List[str]] = None, branch_name: Optional[str] = None) -> Dict[str, Any]`
-Fetches a data asset based on the provided parameters.
 
 * `get_spaces() -> ApiResponse`
 Gets the list of spaces.
@@ -180,8 +210,8 @@ Gets the children of a specified space.
 * `get_attachment_url(resource_type: ResourceType, space_name: str, subpath: str, parent_shortname: str, shortname: str, ext: Optional[str] = None, scope: str = "managed") -> str`
 Gets the URL of an attachment.
 
-* `get_space_health(space_name: str) -> Dict[str, Any]`
-Gets the health status of a specified space.
+* `get_space_health(space_name: str, health_type: str = "soft") -> ApiResponse`
+Gets the health status of a specified space (`soft`, `hard` or `all`). Global admins only.
 
 * `get_attachment_content(resource_type: str, space_name: str, subpath: str, shortname: str, scope: str = "managed") -> Dict[str, Any]`
 Gets the content of an attachment.

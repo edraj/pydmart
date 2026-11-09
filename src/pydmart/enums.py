@@ -1,4 +1,4 @@
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 
 class Status(StrEnum):
@@ -18,6 +18,7 @@ class UserType(StrEnum):
     web = "web"
     mobile = "mobile"
     bot = "bot"
+    admin = "admin"
 
 
 class OtpPurpose(StrEnum):
@@ -118,6 +119,7 @@ class ContentType(StrEnum):
     csv = "csv"
     sqlite = "sqlite"
     parquet = "parquet"
+    binary = "binary"
 
 
 class ContentTypeMedia(StrEnum):
@@ -129,3 +131,63 @@ class ContentTypeMedia(StrEnum):
     pdf = "pdf"
     audio = "audio"
     video = "video"
+
+
+class DmartErrorCode(IntEnum):
+    """dmart's ``error.code`` values a client is most likely to branch on.
+
+    Read them off ``DmartException.error.code``. The numbers match csdmart's
+    ``Dmart.Models/Api/InternalErrorCode.cs``; tsdmart and flutterdmart carry
+    the same set under the same name.
+    """
+    # Sign-in and accounts
+    INVALID_USERNAME_AND_PASS = 10
+    """Wrong shortname, email, msisdn or password."""
+    USER_ISNT_VERIFIED = 11
+    """Password sign-in named an email or phone that isn't verified yet.
+    Offer a code login (``otp_request(OtpPurpose.login, ...)``) or a reset."""
+    SESSION = 50
+    """The token or session isn't valid. ``/user/create`` also answers this
+    for a refused registration."""
+    PASSWORD_RESET_ERROR = 102
+    USER_ACCOUNT_LOCKED = 110
+    OTP_NEEDED = 115
+    """Sign-in needs a second step: a code was sent; call ``login`` again with
+    the same identifier, password, ``device_id`` and the ``otp``."""
+    NOT_ALLOWED = 401
+    # Codes
+    OTP_RESEND_BLOCKED = 103
+    """A new code was asked for too soon."""
+    OTP_INVALID = 307
+    OTP_EXPIRED = 308
+    # Data
+    MISSING_DATA = 202
+    INVALID_ROUTE = 230
+    INVALID_TICKET_STATUS = 300
+    SHORTNAME_ALREADY_EXIST = 400
+    INVALID_DATA = 402
+    CONFLICT = 409
+    """The record changed after the write was authorized; re-read and retry."""
+    DATA_SHOULD_BE_UNIQUE = 415
+    """An email or msisdn is already used by another account."""
+    # Server
+    PASSWORD_HASHING_BUSY = 503
+    REQUEST_TIMEOUT = 504
+
+
+class ErrorType(StrEnum):
+    """dmart's ``error.type`` values (csdmart ``Dmart.Models/Api/ErrorTypes.cs``)."""
+    auth = "auth"
+    jwtauth = "jwtauth"
+    db = "db"
+    request = "request"
+    create = "create"
+    exception = "exception"
+    server = "server"
+    """The server couldn't finish within its own limits (timeout, hashing budget)."""
+    restriction = "restriction"
+    internal = "internal"
+    media = "media"
+    attachment = "attachment"
+    qr = "qr"
+    channel_auth = "channel_auth"

@@ -215,7 +215,7 @@ class TestQueryRequest:
     def test_minimal(self):
         q = QueryRequest(type=QueryType.search, space_name="data", subpath="/", search="hello")
         assert q.type == QueryType.search
-        assert q.limit == 10
+        assert q.limit is None  # the server applies DEFAULT_QUERY_LIMIT
         assert q.offset == 0
         assert q.sort_type == SortType.ascending
 
@@ -234,7 +234,6 @@ class TestQueryRequest:
             sort_type=SortType.descending,
             retrieve_json_payload=True,
             retrieve_attachments=True,
-            validate_schema=False,
             jq_filter=".body",
             exact_subpath=True,
             limit=50,
@@ -246,6 +245,11 @@ class TestQueryRequest:
         assert q.limit == 50
         assert q.aggregation_data is not None
         assert q.join is not None and q.join[0].alias == "author"
+
+    def test_validate_schema_is_deprecated(self):
+        with pytest.warns(DeprecationWarning):
+            q = QueryRequest(type=QueryType.search, space_name="d", subpath="/", search="", validate_schema=False)
+            _ = q.validate_schema
 
     def test_model_dump_roundtrip(self):
         q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")

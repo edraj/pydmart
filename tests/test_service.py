@@ -41,8 +41,12 @@ class TestServiceInit:
         assert svc.base_url == "http://localhost:8282"
         assert svc.auth_token == ""
         assert svc.current_user_roles == []
-        assert svc.current_user_permissions == []
+        assert svc.current_user_permissions == {}
         assert svc._session is None
+
+    def test_device_id_defaults_to_none(self):
+        assert DmartService("http://a").device_id is None
+        assert DmartService("http://a", device_id="dev-1").device_id == "dev-1"
 
     def test_instance_isolation(self):
         """Mutable defaults must not be shared across instances."""
@@ -175,6 +179,55 @@ class TestLogin:
                     await svc.login("admin", "wrong")
 
     @pytest.mark.asyncio
+    async def test_login_sends_only_shortname_and_password_by_default(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/login", payload=make_login_response())
+                await svc.login("admin", "pass")
+                call = m.requests[("POST", URL(f"{BASE_URL}/user/login"))][0]
+                assert call.kwargs["json"] == {"shortname": "admin", "password": "pass"}
+                assert "X-DeviceId" not in call.kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_login_second_step_sends_otp_and_device_id(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/login", payload=make_login_response("t2"))
+                await svc.login("admin", "pass", otp="123456", device_id="dev-9")
+                sent = m.requests[("POST", URL(f"{BASE_URL}/user/login"))][0].kwargs["json"]
+                assert sent == {"shortname": "admin", "password": "pass", "otp": "123456", "device_id": "dev-9"}
+                assert svc.auth_token == "t2"
+
+    @pytest.mark.asyncio
+    async def test_code_login_omits_password(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/login", payload=make_login_response())
+                await svc.login("u1", None, otp="111111")
+                sent = m.requests[("POST", URL(f"{BASE_URL}/user/login"))][0].kwargs["json"]
+                assert sent == {"shortname": "u1", "otp": "111111"}
+
+    @pytest.mark.asyncio
+    async def test_service_device_id_goes_out_as_header(self):
+        async with DmartService(BASE_URL, device_id="dev-1") as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/login", payload=make_login_response())
+                await svc.login("u1", "p")
+                call = m.requests[("POST", URL(f"{BASE_URL}/user/login"))][0]
+                assert call.kwargs["headers"]["X-DeviceId"] == "dev-1"
+                assert "device_id" not in call.kwargs["json"]
+
+    @pytest.mark.asyncio
+    async def test_otp_needed_raises_with_code_115(self):
+        from pydmart.enums import DmartErrorCode
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/login", payload=make_failed_response(error_type="auth", code=115, message="otp needed"))
+                with pytest.raises(DmartException) as exc_info:
+                    await svc.login("admin", "pass", device_id="d")
+                assert exc_info.value.error.code == DmartErrorCode.OTP_NEEDED
+
+    @pytest.mark.asyncio
     async def test_login_empty_attributes_no_crash(self):
         """Login record with no access_token should not crash."""
         async with DmartService(BASE_URL) as svc:
@@ -199,6 +252,16 @@ class TestLoginBy:
                 resp = await svc.login_by({"email": "a@b.com"}, "pass")
                 assert svc.auth_token == "by_tok"
                 assert isinstance(resp, ApiResponse)
+
+    @pytest.mark.asyncio
+    async def test_login_by_passes_otp_and_device_header(self):
+        async with DmartService(BASE_URL, device_id="dev-1") as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/login", payload=make_login_response())
+                await svc.login_by({"email": "a@b.com", "otp": "222222"}, "pass")
+                call = m.requests[("POST", URL(f"{BASE_URL}/user/login"))][0]
+                assert call.kwargs["json"] == {"email": "a@b.com", "otp": "222222", "password": "pass"}
+                assert call.kwargs["headers"]["X-DeviceId"] == "dev-1"
 
     @pytest.mark.asyncio
     async def test_login_by_no_records(self):
@@ -233,6 +296,16 @@ class TestUserManagement:
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
+    async def test_create_user_with_chosen_shortname_and_codes(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/create", payload=make_success_response())
+                attrs = {"email": "a@b.com", "password": "Str0ng!Pass", "email_otp": "123456"}
+                await svc.create_user({"attributes": attrs}, shortname="auto")
+                sent = m.requests[("POST", URL(f"{BASE_URL}/user/create"))][0].kwargs["json"]
+                assert sent == {"shortname": "auto", "attributes": attrs}
+
+    @pytest.mark.asyncio
     async def test_update_user(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
@@ -246,14 +319,6 @@ class TestUserManagement:
             with aioresponses() as m:
                 m.get(f"{BASE_URL}/user/check-existing?email=a@b.com", payload=make_success_response())
                 resp = await svc.check_existing("email", "a@b.com")
-                assert resp.status == "success"
-
-    @pytest.mark.asyncio
-    async def test_user_reset(self):
-        async with DmartService(BASE_URL) as svc:
-            with aioresponses() as m:
-                m.post(f"{BASE_URL}/user/reset", payload=make_success_response())
-                resp = await svc.user_reset("baduser")
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
@@ -274,11 +339,11 @@ class TestGetProfile:
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.get(f"{BASE_URL}/user/profile", payload=make_profile_response(
-                    roles=["editor"], permissions=["read"],
+                    roles=["editor"], permissions={"s:/:content": {"allowed_actions": ["view"]}},
                 ))
                 resp = await svc.get_profile()
                 assert svc.current_user_roles == ["editor"]
-                assert svc.current_user_permissions == ["read"]
+                assert svc.current_user_permissions == {"s:/:content": {"allowed_actions": ["view"]}}
                 assert resp.status == "success"
 
     @pytest.mark.asyncio
@@ -289,7 +354,7 @@ class TestGetProfile:
                 with pytest.raises(DmartException):
                     await svc.get_profile()
                 assert svc.current_user_roles == []
-                assert svc.current_user_permissions == []
+                assert svc.current_user_permissions == {}
 
     @pytest.mark.asyncio
     async def test_keeps_cached_permissions_when_profile_has_none(self):
@@ -349,7 +414,7 @@ class TestGetPermissions:
                 m.get(f"{BASE_URL}/user/permissions", status=status, payload=make_failed_response(code=code))
                 with pytest.raises(DmartException):
                     await svc.get_permissions()
-                assert svc.current_user_permissions == []
+                assert svc.current_user_permissions == {}
 
 
 # ---------------------------------------------------------------------------
@@ -464,13 +529,93 @@ class TestQuery:
                 assert rec.attributes["join"]["customer"] == []
 
     @pytest.mark.asyncio
-    async def test_csv(self):
+    async def test_csv_returns_the_csv_text(self):
+        # dmart answers the file itself as text/csv, not a JSON envelope.
+        csv_body = "shortname,uuid\nalpha,1\nbeta,2\n"
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.post(f"{BASE_URL}/managed/csv", payload=make_success_response())
+                m.post(f"{BASE_URL}/managed/csv", body=csv_body, content_type="text/csv")
                 q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
-                resp = await svc.csv(q)
+                text = await svc.csv(q)
+                assert text == csv_body
+
+    @pytest.mark.asyncio
+    async def test_csv_refusal_raises_with_the_server_error(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/managed/csv", status=400, payload={
+                    "status": "failed",
+                    "error": {"type": "request", "code": 202, "message": "empty body", "info": []},
+                })
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
+                with pytest.raises(DmartException) as exc_info:
+                    await svc.csv(q)
+                assert exc_info.value.status_code == 400
+                assert exc_info.value.error.code == 202
+
+    @pytest.mark.asyncio
+    async def test_csv_non_json_failure_raises(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/managed/csv", status=502, body="Bad Gateway", content_type="text/html")
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
+                with pytest.raises(DmartException) as exc_info:
+                    await svc.csv(q)
+                assert exc_info.value.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_csv_preview(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/managed/csv?preview=1", payload=make_success_response())
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
+                resp = await svc.csv(q, preview=True)
                 assert resp.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_query_leaves_out_limit_validate_schema_and_unset_fields(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/managed/query", payload=make_success_response())
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
+                await svc.query(q)
+                sent = m.requests[("POST", URL(f"{BASE_URL}/managed/query"))][0].kwargs["json"]
+                assert "limit" not in sent
+                assert "validate_schema" not in sent
+                assert "sort_by" not in sent and "join" not in sent
+                assert sent["offset"] == 0
+
+    @pytest.mark.asyncio
+    async def test_query_sends_explicit_limit(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/managed/query", payload=make_success_response())
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="", limit=-1)
+                await svc.query(q)
+                sent = m.requests[("POST", URL(f"{BASE_URL}/managed/query"))][0].kwargs["json"]
+                assert sent["limit"] == -1
+
+    @pytest.mark.asyncio
+    async def test_query_total_is_lower_bound(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                body = make_success_response()
+                body["attributes"] = {"total": 100000, "returned": 10, "total_is_lower_bound": True}
+                m.post(f"{BASE_URL}/managed/query", payload=body)
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
+                resp = await svc.query(q)
+                assert resp.total_is_lower_bound is True
+
+    @pytest.mark.asyncio
+    async def test_query_exact_total(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                body = make_success_response()
+                body["attributes"] = {"total": 3, "returned": 3}
+                m.post(f"{BASE_URL}/managed/query", payload=body)
+                q = QueryRequest(type=QueryType.search, space_name="s", subpath="/", search="")
+                resp = await svc.query(q)
+                assert resp.total_is_lower_bound is False
 
     @pytest.mark.asyncio
     async def test_get_spaces(self):
@@ -516,14 +661,6 @@ class TestActions:
         )
 
     @pytest.mark.asyncio
-    async def test_space(self):
-        async with DmartService(BASE_URL) as svc:
-            with aioresponses() as m:
-                m.post(f"{BASE_URL}/managed/space", payload=make_success_response())
-                resp = await svc.space(self._make_action())
-                assert resp.status == "success"
-
-    @pytest.mark.asyncio
     async def test_request(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
@@ -538,7 +675,7 @@ class TestActions:
 class TestRetrieveEntry:
     @pytest.mark.asyncio
     async def test_success(self):
-        url = f"{BASE_URL}/managed/entry/content/myspace/docs/doc1?retrieve_json_payload=False&retrieve_attachments=False&validate_schema=True"
+        url = f"{BASE_URL}/managed/entry/content/myspace/docs/doc1?retrieve_json_payload=False&retrieve_attachments=False"
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.get(url, payload=make_entry_response())
@@ -551,7 +688,7 @@ class TestRetrieveEntry:
 
     @pytest.mark.asyncio
     async def test_with_options(self):
-        url = f"{BASE_URL}/public/entry/folder/sp/sub/sn?retrieve_json_payload=True&retrieve_attachments=True&validate_schema=False"
+        url = f"{BASE_URL}/public/entry/folder/sp/sub/sn?retrieve_json_payload=True&retrieve_attachments=True"
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.get(url, payload=make_entry_response())
@@ -559,14 +696,28 @@ class TestRetrieveEntry:
                     ResourceType.folder, "sp", "sub", "sn",
                     retrieve_json_payload=True,
                     retrieve_attachments=True,
-                    validate_schema=False,
                     scope="public",
                 )
                 assert isinstance(entry, ResponseEntry)
 
     @pytest.mark.asyncio
+    async def test_validate_schema_is_deprecated_and_not_sent(self):
+        url = f"{BASE_URL}/managed/entry/content/s/p/n?retrieve_json_payload=False&retrieve_attachments=False"
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.get(url, payload=make_entry_response())
+                with pytest.warns(DeprecationWarning, match="validate_schema"):
+                    await svc.retrieve_entry(ResourceType.content, "s", "p", "n", validate_schema=True)
+                sent_url = str(list(m.requests.keys())[0][1])
+                assert "validate_schema" not in sent_url
+
+    def test_permissions_cache_is_a_dict_before_any_fetch(self):
+        svc = DmartService(BASE_URL)
+        assert svc.current_user_permissions.get("s:/:content") is None
+
+    @pytest.mark.asyncio
     async def test_failed_raises(self):
-        url = f"{BASE_URL}/managed/entry/content/s/p/n?retrieve_json_payload=False&retrieve_attachments=False&validate_schema=True"
+        url = f"{BASE_URL}/managed/entry/content/s/p/n?retrieve_json_payload=False&retrieve_attachments=False"
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.get(url, payload=make_failed_response())
@@ -575,7 +726,7 @@ class TestRetrieveEntry:
 
     @pytest.mark.asyncio
     async def test_client_error_raises(self):
-        url = f"{BASE_URL}/managed/entry/content/s/p/n?retrieve_json_payload=False&retrieve_attachments=False&validate_schema=True"
+        url = f"{BASE_URL}/managed/entry/content/s/p/n?retrieve_json_payload=False&retrieve_attachments=False"
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
                 m.get(url, exception=aiohttp.ClientError("timeout"))
@@ -621,42 +772,6 @@ class TestUploadWithPayload:
 
 
 # ---------------------------------------------------------------------------
-# fetch_data_asset
-# ---------------------------------------------------------------------------
-class TestFetchDataAsset:
-    @pytest.mark.asyncio
-    async def test_basic(self):
-        async with DmartService(BASE_URL) as svc:
-            with aioresponses() as m:
-                m.post(f"{BASE_URL}/managed/data-asset", payload=make_success_response())
-                resp = await svc.fetch_data_asset(
-                    resource_type="csv",
-                    data_asset_type="csv",
-                    space_name="data",
-                    subpath="/assets",
-                    shortname="sales",
-                )
-                assert resp.status == "success"
-
-    @pytest.mark.asyncio
-    async def test_with_options(self):
-        async with DmartService(BASE_URL) as svc:
-            with aioresponses() as m:
-                m.post(f"{BASE_URL}/managed/data-asset", payload=make_success_response())
-                resp = await svc.fetch_data_asset(
-                    resource_type="parquet",
-                    data_asset_type="parquet",
-                    space_name="data",
-                    subpath="/",
-                    shortname="ds",
-                    query_string="SELECT name FROM file",
-                    filter_data_assets=["col1"],
-                    branch_name="dev",
-                )
-                assert resp.status == "success"
-
-
-# ---------------------------------------------------------------------------
 # get_attachment_url (sync, no HTTP)
 # ---------------------------------------------------------------------------
 class TestGetAttachmentUrl:
@@ -690,9 +805,27 @@ class TestMiscEndpoints:
     async def test_get_space_health(self):
         async with DmartService(BASE_URL) as svc:
             with aioresponses() as m:
-                m.get(f"{BASE_URL}/managed/health/myspace", payload=make_success_response())
+                m.get(f"{BASE_URL}/managed/health/soft/myspace", payload=make_success_response())
                 resp = await svc.get_space_health("myspace")
                 assert resp.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_get_space_health_hard(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.get(f"{BASE_URL}/managed/health/hard/myspace", payload=make_success_response())
+                resp = await svc.get_space_health("myspace", health_type="hard")
+                assert resp.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_get_client_config(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                body = make_success_response()
+                body["attributes"] = {"otp_length": 6, "default_query_limit": 10, "username_rule_custom": False}
+                m.get(f"{BASE_URL}/public/client-config", payload=body)
+                resp = await svc.get_client_config()
+                assert resp.attributes["otp_length"] == 6  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_get_payload(self):
@@ -861,6 +994,44 @@ class TestOtp:
                 m.post(f"{BASE_URL}/user/verify-contact", payload=make_success_response())
                 resp = await svc.confirm_otp("654321", email="a@b.com")
                 assert resp.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_confirm_otp_change_with_password(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/verify-contact", payload=make_success_response())
+                await svc.confirm_otp("654321", email="new@b.com", password="pw")
+                sent = m.requests[("POST", URL(f"{BASE_URL}/user/verify-contact"))][0].kwargs["json"]
+                assert sent == {"code": "654321", "email": "new@b.com", "password": "pw"}
+
+    @pytest.mark.asyncio
+    async def test_confirm_otp_change_with_current_code(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/verify-contact", payload=make_success_response())
+                await svc.confirm_otp("654321", msisdn="+9647", current_code="111111")
+                sent = m.requests[("POST", URL(f"{BASE_URL}/user/verify-contact"))][0].kwargs["json"]
+                assert sent == {"code": "654321", "msisdn": "+9647", "current_code": "111111"}
+
+    @pytest.mark.asyncio
+    async def test_password_reset_confirm(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/password-reset-confirm", payload=make_success_response())
+                resp = await svc.password_reset_confirm("123456", "N3w!Pass", email="a@b.com")
+                assert resp.status == "success"
+                sent = m.requests[("POST", URL(f"{BASE_URL}/user/password-reset-confirm"))][0].kwargs["json"]
+                assert sent == {"otp": "123456", "password": "N3w!Pass", "email": "a@b.com"}
+
+    @pytest.mark.asyncio
+    async def test_password_reset_confirm_expired_code(self):
+        from pydmart.enums import DmartErrorCode
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(f"{BASE_URL}/user/password-reset-confirm", payload=make_failed_response(code=308, message="expired"))
+                with pytest.raises(DmartException) as exc_info:
+                    await svc.password_reset_confirm("123456", "N3w!Pass", shortname="u1")
+                assert exc_info.value.error.code == DmartErrorCode.OTP_EXPIRED
 
     @pytest.mark.asyncio
     async def test_password_reset_request(self):

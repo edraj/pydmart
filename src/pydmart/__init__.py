@@ -32,6 +32,9 @@ from .enums import (
     ResourceType,
     ContentType,
     ContentTypeMedia,
+    OtpPurpose,
+    DmartErrorCode,
+    ErrorType,
 )
 from .consts import SUBPATH, SHORTNAME, SPACENAME
 
@@ -68,6 +71,9 @@ __all__ = [
     "ResourceType",
     "ContentType",
     "ContentTypeMedia",
+    "OtpPurpose",
+    "DmartErrorCode",
+    "ErrorType",
     # Constants
     "SUBPATH",
     "SHORTNAME",

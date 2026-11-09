@@ -44,9 +44,10 @@ class TestUserType:
         assert UserType.web == "web"
         assert UserType.mobile == "mobile"
         assert UserType.bot == "bot"
+        assert UserType.admin == "admin"
 
     def test_count(self):
-        assert len(UserType) == 3
+        assert len(UserType) == 4
 
 
 class TestQueryType:
@@ -120,7 +121,7 @@ class TestResourceType:
 class TestContentType:
     EXPECTED = [
         "text", "html", "markdown", "json", "image", "python",
-        "pdf", "audio", "video", "jsonl", "csv", "sqlite", "parquet",
+        "pdf", "audio", "video", "jsonl", "csv", "sqlite", "parquet", "binary",
     ]
 
     def test_all_values_present(self):
@@ -128,7 +129,7 @@ class TestContentType:
         assert sorted(values) == sorted(self.EXPECTED)
 
     def test_count(self):
-        assert len(ContentType) == 13
+        assert len(ContentType) == 14
 
 
 class TestContentTypeMedia:
@@ -146,3 +147,38 @@ class TestContentTypeMedia:
         ct_values = {e.value for e in ContentType}
         for media in ContentTypeMedia:
             assert media.value in ct_values
+
+
+class TestDmartErrorCode:
+    def test_values_match_csdmart(self):
+        from pydmart.enums import DmartErrorCode as C
+        assert C.USER_ISNT_VERIFIED == 11
+        assert C.PASSWORD_RESET_ERROR == 102
+        assert C.USER_ACCOUNT_LOCKED == 110
+        assert C.OTP_NEEDED == 115
+        assert C.MISSING_DATA == 202
+        assert C.INVALID_ROUTE == 230
+        assert C.INVALID_TICKET_STATUS == 300
+        assert C.OTP_INVALID == 307
+        assert C.OTP_EXPIRED == 308
+        assert C.NOT_ALLOWED == 401
+        assert C.INVALID_DATA == 402
+        assert C.CONFLICT == 409
+        assert C.PASSWORD_HASHING_BUSY == 503
+        assert C.REQUEST_TIMEOUT == 504
+        assert C.INVALID_USERNAME_AND_PASS == 10
+        assert C.SESSION == 50
+        assert C.OTP_RESEND_BLOCKED == 103
+        assert C.SHORTNAME_ALREADY_EXIST == 400
+        assert C.DATA_SHOULD_BE_UNIQUE == 415
+
+    def test_same_set_as_the_other_sdks(self):
+        from pydmart.enums import DmartErrorCode as C
+        assert len(C) == 19
+
+
+class TestErrorType:
+    def test_server(self):
+        from pydmart.enums import ErrorType
+        assert ErrorType.server == "server"
+        assert ErrorType.request == "request"

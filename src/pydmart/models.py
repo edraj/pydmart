@@ -30,12 +30,24 @@ class ApiResponseRecord(BaseModel):
 
 
 class ApiResponse(BaseModel):
+    """A dmart response. Extra top-level keys (e.g. ``attributes``) are kept.
+
+    On a query, ``attributes`` carries ``total`` and ``returned``. Above the
+    server's count cap ``total`` is the cap and ``attributes["total_is_lower_bound"]``
+    is true; read it with ``total_is_lower_bound``.
+    """
     model_config = ConfigDict(
         extra="allow",
     )
     status: Status
     error: Optional[Error] = None
     records: List[ApiResponseRecord] = Field(default=[])
+
+    @property
+    def total_is_lower_bound(self) -> bool:
+        """True when a query's ``total`` is only a lower bound (the server capped the count)."""
+        attributes = getattr(self, "attributes", None)
+        return bool(isinstance(attributes, dict) and attributes.get("total_is_lower_bound"))
 
 
 class Translation(BaseModel):
@@ -108,10 +120,15 @@ class QueryRequest(BaseModel):
     sort_type: Optional[SortType] = SortType.ascending
     retrieve_json_payload: Optional[bool] = False
     retrieve_attachments: Optional[bool] = False
-    validate_schema: Optional[bool] = True
+    validate_schema: Optional[bool] = Field(
+        default=None,
+        deprecated="dmart removed validate_schema from queries (1.5.0); it is never sent.",
+    )
     jq_filter: Optional[str] = None
     exact_subpath: Optional[bool] = False
-    limit: Optional[int] = 10
+    limit: Optional[int] = None
+    """Page size. Leave it unset to get the server's ``DEFAULT_QUERY_LIMIT``
+    (normally 10); ``-1`` asks for ``MAX_QUERY_LIMIT``."""
     offset: Optional[int] = 0
     aggregation_data: Optional[AggregationType] = None
     join: Optional[List[JoinQuery]] = None
