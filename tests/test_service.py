@@ -1071,3 +1071,99 @@ class TestLazySession:
             await svc.get_manifest()
         assert svc._session is not None
         await svc.close()
+
+
+# ---------------------------------------------------------------------------
+# A service's own token (client_credentials, dmart >= 1.8.0)
+# ---------------------------------------------------------------------------
+TOKEN_URL = f"{BASE_URL}/oidc/token"
+
+
+def make_token_response(token="svc_tok", expires_in=600):
+    return {"access_token": token, "token_type": "Bearer", "expires_in": expires_in}
+
+
+class TestClientCredentials:
+    @pytest.mark.asyncio
+    async def test_sign_in_sends_the_form_and_keeps_the_token(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(TOKEN_URL, payload=make_token_response("svc_tok"))
+                answer = await svc.login_client_credentials("billing", "s3cret", resource="https://api.example.com")
+                assert answer["access_token"] == "svc_tok"
+                assert svc.auth_token == "svc_tok"
+                form = m.requests[("POST", URL(TOKEN_URL))][0].kwargs["data"]
+                assert form == {"grant_type": "client_credentials", "client_id": "billing",
+                                "client_secret": "s3cret", "resource": "https://api.example.com"}
+
+    @pytest.mark.asyncio
+    async def test_a_due_token_is_renewed_before_the_request(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(TOKEN_URL, payload=make_token_response("first"))
+                m.post(TOKEN_URL, payload=make_token_response("second"))
+                m.get(f"{BASE_URL}/user/profile", payload=make_profile_response())
+                await svc.login_client_credentials("billing", "s3cret")
+                svc._renew_at = 0.0  # due now
+                await svc.get_profile()
+                assert svc.auth_token == "second"
+                sent = m.requests[("GET", URL(f"{BASE_URL}/user/profile"))][0].kwargs["headers"]
+                assert sent["Authorization"] == "Bearer second"
+                assert len(m.requests[("POST", URL(TOKEN_URL))]) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_token_not_yet_due_is_kept(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(TOKEN_URL, payload=make_token_response("first", expires_in=600))
+                m.get(f"{BASE_URL}/user/profile", payload=make_profile_response())
+                await svc.login_client_credentials("billing", "s3cret")
+                await svc.get_profile()
+                assert svc.auth_token == "first"
+                assert len(m.requests[("POST", URL(TOKEN_URL))]) == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_share_one_renewal(self):
+        import asyncio
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(TOKEN_URL, payload=make_token_response("first"))
+                m.post(TOKEN_URL, payload=make_token_response("second"))
+                m.get(f"{BASE_URL}/user/profile", payload=make_profile_response(), repeat=True)
+                await svc.login_client_credentials("billing", "s3cret")
+                svc._renew_at = 0.0
+                await asyncio.gather(*(svc.get_profile() for _ in range(5)))
+                assert len(m.requests[("POST", URL(TOKEN_URL))]) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_carries_the_oauth_error(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(TOKEN_URL, status=401,
+                       payload={"error": "invalid_client", "error_description": "unknown client or wrong secret"})
+                with pytest.raises(DmartException) as exc_info:
+                    await svc.login_client_credentials("billing", "wrong")
+                assert exc_info.value.status_code == 401
+                assert exc_info.value.error.message.startswith("invalid_client")
+                assert svc.auth_token == ""
+
+    @pytest.mark.asyncio
+    async def test_setting_the_token_by_hand_ends_renewal(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post(TOKEN_URL, payload=make_token_response("first"))
+                m.get(f"{BASE_URL}/user/profile", payload=make_profile_response())
+                await svc.login_client_credentials("billing", "s3cret")
+                svc.auth_token = "mine"
+                svc._renew_at = 0.0
+                await svc.get_profile()
+                assert svc.auth_token == "mine"
+                assert len(m.requests[("POST", URL(TOKEN_URL))]) == 1
+
+    @pytest.mark.asyncio
+    async def test_token_url_can_point_elsewhere(self):
+        async with DmartService(BASE_URL) as svc:
+            with aioresponses() as m:
+                m.post("https://id.example.com/oidc/token", payload=make_token_response("elsewhere"))
+                await svc.login_client_credentials("billing", "s3cret", token_url="https://id.example.com/oidc/token")
+                assert svc.auth_token == "elsewhere"

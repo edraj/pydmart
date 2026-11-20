@@ -25,6 +25,21 @@ service = DmartService("http://localhost:8282")
 login = await service.login("dmart", "Test1234")
 ```
 
+* A service signs in with its own token instead of a bot's password (dmart >= 1.8.0).
+  Its integration record in `management/integrations` is the OAuth client; the token
+  is renewed shortly before it expires, so a long-running service needs nothing else:
+```python
+import os
+
+service = DmartService("https://dmart.example.com")
+await service.login_client_credentials(os.environ["DMART_CLIENT_ID"], os.environ["DMART_CLIENT_SECRET"])
+spaces = await service.get_spaces()
+```
+  `token_url` defaults to `base_url + "/oidc/token"`; `resource=` asks for a token
+  addressed to one service (dmart's own API refuses it). A refusal raises
+  `DmartException` with the endpoint's OAuth error (`invalid_client: ...`). Setting
+  `auth_token`, a password login or `logout()` ends the renewal.
+
 * Sign in with a device id and the second step. Mobile accounts must name a device
   (dmart >= 1.7.2), and an admin or a new device gets `OTP_NEEDED` (115) and a code:
 ```python
