@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 import warnings
 import aiohttp
 from typing import Any, Dict, List, Literal, Optional, Union, overload
@@ -47,10 +49,28 @@ class DmartService:
         """
         self.base_url: str = base_url
         self.device_id: Optional[str] = device_id
-        self.auth_token: str = ""
+        self._auth_token: str = ""
         self.current_user_roles: List[str] = []
         self.current_user_permissions: Dict[str, Any] = {}
         self._session: Optional[aiohttp.ClientSession] = None
+        # client_credentials sign-in (login_client_credentials): what to ask
+        # the token endpoint again, and when (time.monotonic()).
+        self._client_credentials: Optional[Dict[str, str]] = None
+        self._renew_at: float = float("inf")
+        self._renewal_lock: Optional[asyncio.Lock] = None
+
+    @property
+    def auth_token(self) -> str:
+        """Bearer token sent on every request; empty when signed out.
+
+        Setting it by hand ends ``login_client_credentials``' renewal.
+        """
+        return self._auth_token
+
+    @auth_token.setter
+    def auth_token(self, value: str) -> None:
+        self._end_client_credentials()
+        self._auth_token = value
 
     async def __aenter__(self) -> "DmartService":
         """Enter the async context manager; creates a reusable HTTP session."""
@@ -115,6 +135,9 @@ class DmartService:
             DmartException: On HTTP errors or when the server returns a
                 failure status.
         """
+        await self._renew_if_due()
+        if "headers" in kwargs:
+            kwargs["headers"] = self._with_current_token(kwargs["headers"])
         try:
             session = await self._get_session()
             async with session.request(method, url, **kwargs) as response:
@@ -236,8 +259,112 @@ class DmartService:
         return data
 
     async def logout(self) -> ApiResponse:
-        """Invalidate current token server-side (if any)."""
-        return await self._request("POST", f"{self.base_url}/user/logout", headers=self.headers)
+        """Invalidate current token server-side (if any); ends client-credentials renewal."""
+        try:
+            return await self._request("POST", f"{self.base_url}/user/logout", headers=self.headers)
+        finally:
+            self._end_client_credentials()
+
+    async def login_client_credentials(
+        self,
+        client_id: str,
+        client_secret: str,
+        resource: Optional[str] = None,
+        token_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Sign a service in with its own token (OAuth 2 client_credentials, dmart >= 1.8.0).
+
+        A service with an integration record in ``management/integrations``
+        asks ``/oidc/token`` with its client id and secret instead of signing
+        in with a bot's password. The token is kept like a login's, and a
+        request made when less than min(30 s, half its lifetime) remains gets
+        a new one first, so a long-running service needs nothing else.
+        Setting ``auth_token``, a password login or ``logout`` ends that.
+
+        Args:
+            client_id: The integration record's shortname.
+            client_secret: One of its secrets.
+            resource: Ask for a token addressed to one service (RFC 8707);
+                dmart's own API refuses such a token.
+            token_url: Defaults to ``base_url + "/oidc/token"``.
+
+        Returns:
+            The token endpoint's answer (``access_token``, ``token_type``,
+            ``expires_in``).
+
+        Raises:
+            DmartException: When the endpoint refuses, with its OAuth error
+                (``invalid_client: ...``) as ``error.message``.
+        """
+        credentials = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "token_url": token_url or f"{self.base_url}/oidc/token",
+        }
+        if resource:
+            credentials["resource"] = resource
+        async with self._renewal():
+            answer = await self._fetch_client_token(credentials)
+            self._client_credentials = credentials
+        return answer
+
+    def _renewal(self) -> asyncio.Lock:
+        if self._renewal_lock is None:
+            self._renewal_lock = asyncio.Lock()
+        return self._renewal_lock
+
+    async def _renew_if_due(self) -> None:
+        """Renew a client-credentials token that is due; one renewal for concurrent callers."""
+        if self._client_credentials is None or time.monotonic() < self._renew_at:
+            return
+        async with self._renewal():
+            # Another request may have renewed it while this one waited.
+            credentials = self._client_credentials
+            if credentials is not None and time.monotonic() >= self._renew_at:
+                await self._fetch_client_token(credentials)
+
+    async def _fetch_client_token(self, credentials: Dict[str, str]) -> Dict[str, Any]:
+        form = {
+            "grant_type": "client_credentials",
+            "client_id": credentials["client_id"],
+            "client_secret": credentials["client_secret"],
+        }
+        if "resource" in credentials:
+            form["resource"] = credentials["resource"]
+        try:
+            session = await self._get_session()
+            async with session.post(credentials["token_url"], data=form) as response:
+                try:
+                    answer = await response.json(content_type=None)
+                except (aiohttp.ContentTypeError, json.JSONDecodeError, ValueError):
+                    answer = {}
+                status = response.status
+        except aiohttp.ClientError as e:
+            raise DmartException(status_code=500, error=Error(type="ClientError", code=500, message=str(e), info=[]))
+        token = answer.get("access_token") if isinstance(answer, dict) else None
+        # The token endpoint answers OAuth's own error shape, not dmart's
+        # envelope: {"error": "invalid_client", "error_description": ...}.
+        if status >= 400 or not token:
+            reason = answer.get("error") if isinstance(answer, dict) else None
+            message = f"{reason}: {answer.get('error_description', '')}" if reason else "client_credentials sign-in failed"
+            raise DmartException(status_code=status, error=Error(type="auth", code=status, message=message, info=[]))
+        self._auth_token = token
+        seconds = answer.get("expires_in")
+        if isinstance(seconds, (int, float)) and seconds > 0:
+            self._renew_at = time.monotonic() + seconds - min(30.0, seconds / 2)
+        else:
+            self._renew_at = float("inf")
+        return answer
+
+    def _end_client_credentials(self) -> None:
+        self._client_credentials = None
+        self._renew_at = float("inf")
+
+    def _with_current_token(self, headers: Any) -> Any:
+        """The caller's headers with Authorization set to the current token, if they carried one."""
+        if isinstance(headers, dict) and "Authorization" in headers and self._auth_token:
+            return {**headers, "Authorization": f"Bearer {self._auth_token}"}
+        return headers
 
     async def create_user(self, request: Dict[str, Any], shortname: Optional[str] = None) -> ApiResponse:
         """Register a new user (POST /user/create).
@@ -368,6 +495,7 @@ class DmartService:
         body = self._query_body(query)
         if preview:
             return await self._request("POST", f"{url}?preview=1", json=body, headers=self.json_headers)
+        await self._renew_if_due()
         try:
             session = await self._get_session()
             async with session.post(url, json=body, headers=self.json_headers) as response:
@@ -433,6 +561,7 @@ class DmartService:
                 DeprecationWarning,
                 stacklevel=2,
             )
+        await self._renew_if_due()
         try:
             session = await self._get_session()
             async with session.request("GET", url, headers=self.headers) as response:

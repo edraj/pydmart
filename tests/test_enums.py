@@ -101,7 +101,7 @@ class TestResourceAttachmentType:
 
 class TestResourceType:
     def test_count(self):
-        assert len(ResourceType) == 26
+        assert len(ResourceType) == 32
 
     @pytest.mark.parametrize("name,value", [
         ("user", "user"),
@@ -113,6 +113,12 @@ class TestResourceType:
         ("space", "space"),
         ("post", "post"),
         ("notification", "notification"),
+        ("data_asset", "data_asset"),
+        ("lock", "lock"),
+        ("log", "log"),
+        ("reply", "reply"),
+        ("share", "share"),
+        ("integration", "integration"),
     ])
     def test_selected_values(self, name: str, value: str):
         assert ResourceType[name] == value
