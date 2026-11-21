@@ -103,6 +103,12 @@ class ResourceType(StrEnum):
     csv = "csv"
     sqlite = "sqlite"
     parquet = "parquet"
+    data_asset = "data_asset"
+    lock = "lock"
+    log = "log"
+    reply = "reply"
+    share = "share"
+    integration = "integration"
 
 
 class ContentType(StrEnum):
