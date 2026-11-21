@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.8.0
 
 **Compatibility:** `login_client_credentials` needs csdmart >= 1.8.0; the rest
 is unchanged.
