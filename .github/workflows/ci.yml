@@ -1,0 +1,74 @@
+# Runs the test suite on every supported Python, then builds the package and
+# checks what would be uploaded to PyPI.
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# Least privilege: this workflow only reads the tree. Publishing is a separate,
+# deliberate act run from a maintainer's machine.
+permissions:
+  contents: read
+
+# Supersede a PR's own earlier runs, but never a push to main: that run is the
+# record for a commit that has already landed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is python_requires' floor; 3.14 is current.
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The package itself, not src/ on the path: a missing dependency in
+      # setup.cfg fails here rather than on a user's machine.
+      - run: python -m pip install ".[test]"
+
+      - run: python -m pytest -q tests
+
+  package:
+    name: build and check the package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - run: python -m pip install build twine
+
+      - run: python -m build
+
+      # The README renders on PyPI and the metadata is complete.
+      - run: python -m twine check --strict dist/*
+
+      # The wheel holds the package and nothing from tests/.
+      - name: the wheel contains only the package
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          [wheel] = glob.glob("dist/*.whl")
+          names = zipfile.ZipFile(wheel).namelist()
+          stray = [n for n in names if not n.startswith(("pydmart/", "pydmart-"))]
+          assert not stray, f"unexpected files in the wheel: {stray}"
+          assert "pydmart/service.py" in names, "pydmart/service.py missing from the wheel"
+          print(f"wheel OK: {len(names)} files")
+          PY
