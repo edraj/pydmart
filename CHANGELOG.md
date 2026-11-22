@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.9.0
+
+**Compatibility:** the second-factor calls need csdmart >= 1.8.1; the rest is
+unchanged.
+
+### Added
+
+- **Second factors at sign-in:** `login` takes the second step's `totp` (an
+  authenticator app's code), `recovery_code`, or `webauthn` (a security key's
+  answer); `login_by` passes them in `credentials`.
+  `DmartException.second_factor` reads the step an `OTP_NEEDED` (115) or
+  `SECOND_FACTOR_REQUIRED` (116) answer asks for.
+- **Key-only sign-in:** `key_only_challenge(**account)` and
+  `login_with_key_alone(webauthn, **account)`, for an account that turned it
+  on; a tool that talks to the key (python-fido2, say) signs the challenge.
+- **The account's second factors:** `get_second_factors`,
+  `passkey_proof_challenge`, `new_recovery_codes`, `set_key_only`, and an
+  authenticator app's `totp_begin`, `totp_confirm` and `totp_remove`.
+- **`DmartErrorCode`** gains `SECOND_FACTOR_REQUIRED` (116) and
+  `SECOND_FACTOR_INVALID` (117), as tsdmart and flutterdmart do.
+
 ## 2.8.0
 
 **Compatibility:** `login_client_credentials` needs csdmart >= 1.8.0; the rest

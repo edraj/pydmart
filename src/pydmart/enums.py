@@ -159,7 +159,16 @@ class DmartErrorCode(IntEnum):
     USER_ACCOUNT_LOCKED = 110
     OTP_NEEDED = 115
     """Sign-in needs a second step: a code was sent; call ``login`` again with
-    the same identifier, password, ``device_id`` and the ``otp``."""
+    the same identifier, password, ``device_id`` and the ``otp``. For an
+    account with a security key or an authenticator app (dmart >= 1.8.1),
+    ``DmartException.second_factor`` says which step instead."""
+    SECOND_FACTOR_REQUIRED = 116
+    """An account with a security key or an authenticator app, on a path that
+    can't do that step (a code alone, social sign-in), or an admin's key
+    setup (dmart >= 1.8.1)."""
+    SECOND_FACTOR_INVALID = 117
+    """The second step was refused: the key's answer, the app's code or the
+    recovery code (dmart >= 1.8.1)."""
     NOT_ALLOWED = 401
     # Codes
     OTP_RESEND_BLOCKED = 103

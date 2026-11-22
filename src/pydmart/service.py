@@ -177,6 +177,9 @@ class DmartService:
         password: Optional[str],
         otp: Optional[str] = None,
         device_id: Optional[str] = None,
+        totp: Optional[str] = None,
+        recovery_code: Optional[str] = None,
+        webauthn: Optional[Dict[str, Any]] = None,
     ) -> ApiResponse:
         """Login with shortname and password (and/or code); stores auth token on success.
 
@@ -187,6 +190,12 @@ class DmartService:
         login (from ``otp_request(OtpPurpose.login, ...)``) passes
         ``password=None`` and the ``otp``.
 
+        An account with a security key or an authenticator app (dmart >= 1.8.1)
+        answers 115 with the step it needs, which ``DmartException.second_factor``
+        reads. Call ``login`` again with the password and ``totp`` (the app's
+        code), ``recovery_code``, or ``webauthn`` (a key's answer, as
+        ``{"challenge_id", "credential"}`` with the PublicKeyCredential as JSON).
+
         Mobile accounts must send a device id (here, or ``device_id`` on the
         service, which goes out as ``X-DeviceId``); without one dmart answers
         ``INVALID_DATA`` (402) or 115.
@@ -196,6 +205,9 @@ class DmartService:
             password: User password, or None for a code login.
             otp: Code from the second step or a code login.
             device_id: Device identifier; overrides the service's ``device_id``.
+            totp: An authenticator app's code, for the second step.
+            recovery_code: One of the account's recovery codes, instead.
+            webauthn: A security key's answer to the challenge, for the second step.
 
         Returns:
             ApiResponse containing the login record with access_token.
@@ -214,6 +226,9 @@ class DmartService:
             body["otp"] = otp
         if device_id is not None:
             body["device_id"] = device_id
+        for key, value in (("totp", totp), ("recovery_code", recovery_code), ("webauthn", webauthn)):
+            if value is not None:
+                body[key] = value
         data = await self._request(
             "POST",
             f"{self.base_url}/user/login",
@@ -234,7 +249,8 @@ class DmartService:
         """Login with arbitrary credentials dict plus password; stores auth token.
 
         ``credentials`` may also carry ``otp`` and ``device_id`` for the
-        two-step sign-in described on ``login``. The service's ``device_id``
+        two-step sign-in described on ``login``, and ``totp``,
+        ``recovery_code`` or ``webauthn`` for an account's second factor. The service's ``device_id``
         goes out as ``X-DeviceId``; a ``device_id`` in ``credentials`` wins.
 
         Args:
@@ -257,6 +273,89 @@ class DmartService:
         if data.records:
             self.auth_token = data.records[0].attributes.get("access_token", "")
         return data
+
+    async def key_only_challenge(self, **account: str) -> Dict[str, Any]:
+        """Key-only sign-in's challenge (dmart >= 1.8.1), before there is a session.
+
+        Name the account as ``/user/login`` takes it: ``shortname=``,
+        ``email=`` or ``msisdn=``. Every name gets one; only an account that
+        turned key-only sign-in on gets one its key answers. A tool that talks
+        to a key (python-fido2, say) signs ``options`` for the domain in
+        ``options["rpId"]`` and passes the answer to ``login_with_key_alone``.
+
+        Returns:
+            ``{"challenge_id", "options"}``.
+        """
+        data = await self._request("POST", f"{self.base_url}/user/passkeys/login-options",
+                                   json=account, headers={"Content-Type": "application/json"})
+        return dict(getattr(data, "attributes", None) or {})
+
+    async def login_with_key_alone(self, webauthn: Dict[str, Any], **account: str) -> ApiResponse:
+        """Key-only sign-in (dmart >= 1.8.1): the key's answer, no password; stores the token.
+
+        Args:
+            webauthn: The key's answer to ``key_only_challenge``:
+                ``{"challenge_id", "credential"}``.
+            **account: ``shortname=``, ``email=`` or ``msisdn=``.
+
+        Raises:
+            DmartException: ``SECOND_FACTOR_INVALID`` (117) for every refusal.
+        """
+        data = await self._request("POST", f"{self.base_url}/user/login",
+                                   json={**account, "webauthn": webauthn}, headers=self._login_headers)
+        if data.records:
+            self.auth_token = data.records[0].attributes.get("access_token", "")
+        return data
+
+    async def _second_factor_call(self, path: str, body: Optional[Dict[str, Any]] = None,
+                                  method: str = "POST") -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {"headers": self.json_headers}
+        if body is not None:
+            kwargs["json"] = body
+        data = await self._request(method, f"{self.base_url}/{path}", **kwargs)
+        return dict(getattr(data, "attributes", None) or {})
+
+    async def get_second_factors(self) -> Dict[str, Any]:
+        """The signed-in account's second factors (dmart >= 1.8.1).
+
+        ``passkeys``, ``recovery_codes_left``, ``may_add``, ``key_only``,
+        ``totp``, ``totp_added_at`` (when it has an app) and ``totp_may_add``.
+        """
+        return await self._second_factor_call("user/passkeys", method="GET")
+
+    async def passkey_proof_challenge(self) -> Dict[str, Any]:
+        """A proof challenge for the account's keys: what a change asks its key to sign."""
+        return await self._second_factor_call("user/passkeys/proof-options", {})
+
+    async def new_recovery_codes(self, **proof: Any) -> List[str]:
+        """Ten new recovery codes; the old set is void.
+
+        ``proof``: ``password=``, plus ``webauthn=`` (the key's answer to
+        ``passkey_proof_challenge``) once the account has a key, or ``totp=``
+        with an app and no key.
+        """
+        return list((await self._second_factor_call("user/passkeys/recovery-codes", proof)).get("recovery_codes", []))
+
+    async def set_key_only(self, enabled: bool, **proof: Any) -> Dict[str, Any]:
+        """Key-only sign-in on or off for the signed-in account; it needs a key. ``proof`` as for ``new_recovery_codes``."""
+        return await self._second_factor_call("user/passkeys/key-only", {"enabled": enabled, **proof})
+
+    async def totp_begin(self, **proof: Any) -> Dict[str, Any]:
+        """An authenticator app's setup: ``{"setup_id", "secret", "uri"}``.
+
+        Show ``uri`` (``otpauth://``) as a QR code, or ``secret`` to type in,
+        then confirm with ``totp_confirm``. ``proof`` as for ``new_recovery_codes``.
+        """
+        return await self._second_factor_call("user/totp/begin", proof)
+
+    async def totp_confirm(self, setup_id: str, code: str) -> Optional[List[str]]:
+        """Confirms the app with a code from it; the recovery codes when it is the first second factor."""
+        codes = (await self._second_factor_call("user/totp/confirm", {"setup_id": setup_id, "code": code})).get("recovery_codes")
+        return list(codes) if codes else None
+
+    async def totp_remove(self, **proof: Any) -> Dict[str, Any]:
+        """Removes the account's app. ``proof``: ``password=`` and ``totp=`` (and ``webauthn=`` with a key)."""
+        return await self._second_factor_call("user/totp/remove", proof)
 
     async def logout(self) -> ApiResponse:
         """Invalidate current token server-side (if any); ends client-credentials renewal."""

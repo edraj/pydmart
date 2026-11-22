@@ -20,6 +20,19 @@ class DmartException(Exception):
         self.status_code = status_code
         self.error = error
 
+    @property
+    def second_factor(self) -> Optional[Dict[str, Any]]:
+        """The second step a sign-in asks for (dmart >= 1.8.1), or None.
+
+        ``error.info[0]`` of an ``OTP_NEEDED`` (115) or ``SECOND_FACTOR_REQUIRED``
+        (116) answer: ``factors`` lists what the account may use (``passkey``,
+        ``totp``, ``recovery``, ``passkey_setup``), and ``webauthn`` carries the
+        key's challenge (``challenge_id``, ``options``).
+        """
+        info = self.error.info if self.error else None
+        step = info[0] if isinstance(info, list) and info else None
+        return step if isinstance(step, dict) and isinstance(step.get("factors"), list) else None
+
 
 class ApiResponseRecord(BaseModel):
     resource_type: str
