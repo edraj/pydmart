@@ -180,7 +180,7 @@ class TestDmartErrorCode:
 
     def test_same_set_as_the_other_sdks(self):
         from pydmart.enums import DmartErrorCode as C
-        assert len(C) == 19
+        assert len(C) == 21
 
 
 class TestErrorType:

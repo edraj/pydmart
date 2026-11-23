@@ -49,7 +49,10 @@ service = DmartService("http://localhost:8282", device_id="phone-1")  # sent as 
 try:
     await service.login("dmart", "Test1234")
 except DmartException as e:
-    if e.error.code == DmartErrorCode.OTP_NEEDED:
+    step = e.second_factor  # dmart >= 1.8.1: an account with a key or an authenticator app
+    if step and "totp" in step["factors"]:
+        await service.login("dmart", "Test1234", totp=input("code from the app: "))
+    elif e.error.code == DmartErrorCode.OTP_NEEDED:
         await service.login("dmart", "Test1234", otp=input("code: "))
     elif e.error.code == DmartErrorCode.USER_ISNT_VERIFIED:
         ...  # the address isn't verified: offer a code login or a password reset
@@ -144,14 +147,27 @@ for record in response.records:
 * `DmartService(base_url: str, device_id: Optional[str] = None)`
 Creates the client. `device_id`, when set, is sent as the `X-DeviceId` header on sign-in.
 
-* `login(shortname: str, password: Optional[str], otp: Optional[str] = None, device_id: Optional[str] = None) -> ApiResponse`
+* `login(shortname: str, password: Optional[str], otp: Optional[str] = None, device_id: Optional[str] = None, totp=None, recovery_code=None, webauthn=None) -> ApiResponse`
 Performs a login with the shortname and password. When dmart answers `OTP_NEEDED` (115), call it
 again with the same password and `device_id` plus the `otp`. Pass `password=None` and `otp` for a
-code login. `USER_ISNT_VERIFIED` (11) means the address isn't verified yet.
+code login. `USER_ISNT_VERIFIED` (11) means the address isn't verified yet. For an account with a
+security key or an authenticator app (dmart >= 1.8.1), 115 carries the step it needs instead
+(`DmartException.second_factor`): call again with the password and `totp`, `recovery_code`, or
+`webauthn` (a key's answer, `{"challenge_id", "credential"}`).
 
 * `login_by(credentials: dict, password: str) -> ApiResponse`
 Performs a login action using custom credentials (`email`, `msisdn`, and optionally `otp`,
-`device_id`) and password.
+`device_id`, `totp`, `recovery_code`, `webauthn`) and password.
+
+* `key_only_challenge(**account) -> dict`, `login_with_key_alone(webauthn: dict, **account) -> ApiResponse`
+Key-only sign-in (dmart >= 1.8.1), for an account that turned it on: the challenge for
+`shortname=`, `email=` or `msisdn=`, signed by the key (python-fido2, say) for `options["rpId"]`,
+then the answer with no password.
+
+* `get_second_factors()`, `passkey_proof_challenge()`, `new_recovery_codes(**proof)`, `set_key_only(enabled, **proof)`, `totp_begin(**proof)`, `totp_confirm(setup_id, code)`, `totp_remove(**proof)`
+The signed-in account's second factors (dmart >= 1.8.1). A change carries `password=`, plus
+`webauthn=` (the key's answer to `passkey_proof_challenge()`) once it has a key, or `totp=` with
+an app and no key.
 
 * `logout() -> ApiResponse`
 Performs a logout action.
